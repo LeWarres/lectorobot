@@ -1,0 +1,40 @@
+{
+  "name": "manga-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lector de manga local para Windows",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "dependencies": {
+    "7zip-bin": "5.2.0",
+    "adm-zip": "0.6.1",
+    "node-unrar-js": "^2.0.2",
+    "pdfjs-dist": "^6.5.438"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.local.mangadesktop",
+    "productName": "Manga Desktop",
+    "files": [
+      "desktop/**/*",
+      "node_modules/adm-zip/**/*",
+      "node_modules/7zip-bin/**/*",
+      "node_modules/node-unrar-js/**/*",
+      "node_modules/pdfjs-dist/build/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/7zip-bin/**/*",
+      "desktop/wallpaper.ps1",
+      "desktop/mouse-forward.ps1"
+    ],
+    "win": {
+      "target": "portable"
+    }
+  }
+}
