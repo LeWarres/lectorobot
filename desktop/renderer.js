@@ -13,6 +13,21 @@ const collectionSelect = document.querySelector('#collection')
 const displaySelect = document.querySelector('#display')
 let current, total, page, imageUrl, pdf, shelf, coverUrls = [], book3d, bookUrls = new Map(), pendingPageUrls = new Map(), generation = 0, pageRequest = 0, zoom = 1
 const attempt = async action => { try { error.textContent = ''; await action() } catch (err) { error.textContent = err.message } }
+async function loadPdf(pdfjs, source, id, reportError = () => {}) {
+  if (!source.ranged) return pdfjs.getDocument({ data: source.data }).promise
+  const transport = new pdfjs.PDFDataRangeTransport(source.size, new Uint8Array(0), true)
+  let stopped = false, failure, task
+  transport.requestDataRange = (begin, end) => {
+    window.reader.pdfRange(id, begin, end, { size: source.size, mtimeMs: source.mtimeMs }).then(bytes => {
+      if (!stopped) transport.onDataRange(begin, new Uint8Array(bytes))
+    }).catch(err => {
+      if (!stopped) { failure = err; reportError(err); task?.destroy().catch(() => {}) }
+    })
+  }
+  transport.abort = () => { stopped = true }
+  task = pdfjs.getDocument({ range: transport, disableStream: true, disableAutoFetch: true })
+  try { return await task.promise } catch (err) { throw failure || err }
+}
 async function mapLimited(items, limit, callback) {
   const result = new Array(items.length)
   let next = 0
@@ -27,7 +42,7 @@ async function showLibrary() {
   zoom = 1
   image.style.transform = ''; canvas.style.transform = ''
   book3d?.destroy(); book3d = null; bookHost.hidden = true
-  if (pdf) { const previousPdf = pdf; pdf = null; previousPdf.destroy().catch(() => {}) }
+  if (pdf) { const previousPdf = pdf; pdf = null; previousPdf.loadingTask.destroy().catch(() => {}) }
   if (imageUrl) { URL.revokeObjectURL(imageUrl); imageUrl = null; image.src = '' }
   canvas.width = 0; canvas.height = 0
   for (const url of bookUrls.values()) URL.revokeObjectURL(url)
@@ -60,7 +75,7 @@ async function showLibrary() {
       if (result.type === 'pdf') {
         const pdfjs = await import('../node_modules/pdfjs-dist/build/pdf.mjs')
         pdfjs.GlobalWorkerOptions.workerSrc = '../node_modules/pdfjs-dist/build/pdf.worker.mjs'
-        pdf = await pdfjs.getDocument({ data: result.data }).promise
+        pdf = await loadPdf(pdfjs, result, book.id, err => { error.textContent = err.message })
         total = pdf.numPages
         page = Math.min(page, total - 1)
       }
@@ -104,14 +119,14 @@ async function showLibrary() {
           if (bytes) {
             const pdfjs = await import('../node_modules/pdfjs-dist/build/pdf.mjs')
             pdfjs.GlobalWorkerOptions.workerSrc = '../node_modules/pdfjs-dist/build/pdf.worker.mjs'
-            const doc = await pdfjs.getDocument({ data: bytes }).promise
+            const doc = await loadPdf(pdfjs, bytes, book.id)
             try {
               const first = await doc.getPage(1), viewport = first.getViewport({ scale: 0.5 })
               const surface = document.createElement('canvas')
               surface.width = viewport.width; surface.height = viewport.height
               await first.render({ canvas: surface, viewport }).promise
               data = await new Promise(resolve => surface.toBlob(resolve, 'image/png'))
-            } finally { await doc.destroy() }
+            } finally { await doc.loadingTask.destroy() }
           }
         } catch (err) { console.warn('No se pudo cargar la portada:', err) }
       }

@@ -12,7 +12,8 @@
   "dependencies": {
     "adm-zip": "0.6.1",
     "node-unrar-js": "^2.0.2",
-    "pdfjs-dist": "^6.5.438"
+    "pdfjs-dist": "^6.5.438",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "electron": "45.2.3",
@@ -24,6 +25,8 @@
     "files": [
       "desktop/**/*",
       "node_modules/adm-zip/**/*",
+      "node_modules/yauzl/**/*",
+      "node_modules/pend/**/*",
       "node_modules/node-unrar-js/**/*",
       "node_modules/pdfjs-dist/build/**/*"
     ],

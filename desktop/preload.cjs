@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('reader', {
   open: id => ipcRenderer.invoke('open', id),
   cover: id => ipcRenderer.invoke('cover', id),
   pdfCover: id => ipcRenderer.invoke('pdf-cover', id),
+  pdfRange: (id, begin, end, expected) => ipcRenderer.invoke('pdf-range', id, begin, end, expected),
   page: (id, page, remember = true, allowPrompt = true) => ipcRenderer.invoke('page', id, page, remember, allowPrompt),
   progress: (id, page) => ipcRenderer.invoke('progress', id, page),
   wallpaper: (display, collection) => ipcRenderer.invoke('wallpaper', display, collection),

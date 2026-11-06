@@ -9,7 +9,13 @@ const { ALL, createCollection, setMembership, booksFor } = require('./collection
 const { secureWindow } = require('./window-security.cjs')
 const { waitForReady } = require('./process-ready.cjs')
 const { validLibrary, validCollections } = require('./storage-validation.cjs')
-const { createLargeFileGuard } = require('./large-files.cjs')
+const { createLargeFileGuard, FILE_WARNING_BYTES } = require('./large-files.cjs')
+const { readPdfRange } = require('./pdf-range.cjs')
+
+async function pdfSource(book) {
+  const { size, mtimeMs } = await fs.stat(book.path)
+  return size > FILE_WARNING_BYTES ? { ranged: true, size, mtimeMs } : { data: await fs.readFile(book.path) }
+}
 
 let library = []
 let win
@@ -145,8 +151,8 @@ ipcMain.handle('remove', async (_event, id) => {
 ipcMain.handle('open', async (_event, id) => {
   const book = getBook(id)
   await largeFiles.ensure(book)
-  if (book.type === 'pdf') return { title: book.title, type: book.type, page: book.page, data: await fs.readFile(book.path) }
-  const entries = book.type === 'cbr' ? await rar(book.path) : pages(book.path)
+  if (book.type === 'pdf') return { title: book.title, type: book.type, page: book.page, ...await pdfSource(book) }
+  const entries = book.type === 'cbr' ? await rar(book.path) : await pages(book.path)
   if (!entries.length) throw new Error('El archivo no contiene páginas de imagen.')
   return { title: book.title, type: book.type, total: entries.length, page: Math.min(book.page, entries.length - 1) }
 })
@@ -154,28 +160,34 @@ ipcMain.handle('cover', async (_event, id) => {
   const book = getBook(id)
   if (book.type === 'pdf') return null
   if (!await largeFiles.canPreview(book)) return null
-  const entries = book.type === 'cbr' ? await rar(book.path) : pages(book.path)
+  const entries = book.type === 'cbr' ? await rar(book.path) : await pages(book.path)
   const entry = entries[0]
   if (!entry || !await largeFiles.canPreview(book, entry.header?.size ?? entry.unpSize)) return null
-  return book.type === 'cbr' ? await rar(book.path, entry.name) : entry.getData()
+  return book.type === 'cbr' ? await rar(book.path, entry.name) : await entry.getData()
 })
 ipcMain.handle('pdf-cover', async (_event, id) => {
   const book = getBook(id)
   if (book.type !== 'pdf') throw new Error('El archivo no es un PDF.')
   if (!await largeFiles.canPreview(book)) return null
-  return fs.readFile(book.path)
+  return pdfSource(book)
+})
+ipcMain.handle('pdf-range', async (_event, id, begin, end, expected) => {
+  const book = getBook(id)
+  if (book.type !== 'pdf') throw new Error('El archivo no es un PDF.')
+  if (!await largeFiles.canPreview(book)) throw new Error('Vuelve a abrir el PDF para autorizar su lectura.')
+  return readPdfRange(book.path, begin, end, expected)
 })
 ipcMain.handle('page', async (_event, id, number, remember = true, allowPrompt = true) => {
   const book = getBook(id)
   if (allowPrompt) await largeFiles.ensure(book)
   else if (!await largeFiles.canPreview(book)) return { deferred: true }
-  const entries = book.type === 'cbr' ? await rar(book.path) : pages(book.path)
+  const entries = book.type === 'cbr' ? await rar(book.path) : await pages(book.path)
   if (!Number.isInteger(number) || number < 0 || number >= entries.length) throw new Error('Página fuera de rango.')
   const entry = entries[number]
   const size = entry.header?.size ?? entry.unpSize
   if (allowPrompt) await largeFiles.ensure(book, size)
   else if (!await largeFiles.canPreview(book, size)) return { deferred: true }
-  const data = book.type === 'cbr' ? await rar(book.path, entry.name) : entry.getData()
+  const data = book.type === 'cbr' ? await rar(book.path, entry.name) : await entry.getData()
   if (remember) { book.page = number; await save() }
   return { data, name: entry.entryName || entry.name }
 })
