@@ -11,15 +11,28 @@ const isWallpaper = params.has('wallpaper')
 let wallpaperCollection = params.get('collection') || 'all'
 const collectionSelect = document.querySelector('#collection')
 const displaySelect = document.querySelector('#display')
-let current, total, page, imageUrl, pdf, shelf, coverUrls = [], book3d, bookUrls = new Map(), generation = 0, zoom = 1
+let current, total, page, imageUrl, pdf, shelf, coverUrls = [], book3d, bookUrls = new Map(), pendingPageUrls = new Map(), generation = 0, pageRequest = 0, zoom = 1
 const attempt = async action => { try { error.textContent = ''; await action() } catch (err) { error.textContent = err.message } }
+async function mapLimited(items, limit, callback) {
+  const result = new Array(items.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) { const index = next++; result[index] = await callback(items[index]) }
+  }))
+  return result
+}
 async function showLibrary() {
   const loadGeneration = ++generation
+  pageRequest++
   zoom = 1
   image.style.transform = ''; canvas.style.transform = ''
   book3d?.destroy(); book3d = null; bookHost.hidden = true
+  if (pdf) { const previousPdf = pdf; pdf = null; previousPdf.destroy().catch(() => {}) }
+  if (imageUrl) { URL.revokeObjectURL(imageUrl); imageUrl = null; image.src = '' }
+  canvas.width = 0; canvas.height = 0
   for (const url of bookUrls.values()) URL.revokeObjectURL(url)
   bookUrls.clear()
+  pendingPageUrls.clear()
   viewer.hidden = true
   updateDesktopMenu()
   peek.hidden = true
@@ -54,8 +67,7 @@ async function showLibrary() {
       document.querySelector('#title').textContent = result.title
       library.hidden = true; peek.hidden = true; shelfElement.hidden = true; shelf?.destroy(); shelf = null; viewer.hidden = false
       zoom = 1; updateDesktopMenu()
-      await startBook()
-      await showPage()
+      try { await startBook(); await showPage() } catch (err) { await showLibrary(); throw err }
     })
     if (isWallpaper) button.addEventListener('click', openBook)
     const card = document.createElement('div')
@@ -78,31 +90,36 @@ async function showLibrary() {
     library.append(card)
   }
   if (!isWallpaper) return
+  const newUrls = []
   try {
     const [lib, mod] = await Promise.all([import('./book3d.js'), import('./shelf3d.js')])
     if (generation !== loadGeneration) return
-    const newUrls = []
-    const works = await Promise.all(books.map(async book => {
+    const works = await mapLimited(books, 3, async book => {
+      if (generation !== loadGeneration) return null
       let data = await window.reader.cover(book.id).catch(() => null)
+      if (generation !== loadGeneration) return null
       if (!data && book.type === 'pdf') {
         try {
-          const pdfjs = await import('../node_modules/pdfjs-dist/build/pdf.mjs')
-          pdfjs.GlobalWorkerOptions.workerSrc = '../node_modules/pdfjs-dist/build/pdf.worker.mjs'
-          const doc = await pdfjs.getDocument({ data: (await window.reader.open(book.id)).data }).promise
-          const first = await doc.getPage(1), viewport = first.getViewport({ scale: 0.5 })
-          const surface = document.createElement('canvas')
-          surface.width = viewport.width; surface.height = viewport.height
-          await first.render({ canvas: surface, viewport }).promise
-          data = await new Promise(resolve => surface.toBlob(resolve, 'image/png'))
-          await doc.destroy()
+          const bytes = await window.reader.pdfCover(book.id)
+          if (bytes) {
+            const pdfjs = await import('../node_modules/pdfjs-dist/build/pdf.mjs')
+            pdfjs.GlobalWorkerOptions.workerSrc = '../node_modules/pdfjs-dist/build/pdf.worker.mjs'
+            const doc = await pdfjs.getDocument({ data: bytes }).promise
+            try {
+              const first = await doc.getPage(1), viewport = first.getViewport({ scale: 0.5 })
+              const surface = document.createElement('canvas')
+              surface.width = viewport.width; surface.height = viewport.height
+              await first.render({ canvas: surface, viewport }).promise
+              data = await new Promise(resolve => surface.toBlob(resolve, 'image/png'))
+            } finally { await doc.destroy() }
+          }
         } catch (err) { console.warn('No se pudo cargar la portada:', err) }
       }
       const cover = data ? URL.createObjectURL(data instanceof Blob ? data : new Blob([data])) : null
       if (cover) newUrls.push(cover)
       return { ...book, cover }
-    }))
+    })
     if (generation !== loadGeneration) { newUrls.forEach(url => URL.revokeObjectURL(url)); return }
-    coverUrls.push(...newUrls)
     shelfElement.hidden = false
     const openWork = work => {
       const index = books.findIndex(book => book.id === work.id)
@@ -115,13 +132,35 @@ async function showLibrary() {
       document.querySelector('#peek-read').onclick = () => openWork(info.work)
     } })
     document.querySelector('#peek-close').onclick = () => shelf?.unpeek()
-    if (!shelf) shelfElement.hidden = true
-    else if (zoom !== 1) shelf.setZoom(zoom)
-  } catch (err) { shelfElement.hidden = true; console.error('No se pudo abrir el estante:', err) }
+    if (!shelf) { shelfElement.hidden = true; newUrls.forEach(url => URL.revokeObjectURL(url)) }
+    else { coverUrls.push(...newUrls); if (zoom !== 1) shelf.setZoom(zoom) }
+  } catch (err) {
+    newUrls.forEach(url => URL.revokeObjectURL(url))
+    if (generation === loadGeneration) { shelfElement.hidden = true; console.error('No se pudo abrir el estante:', err) }
+  }
 }
-async function pageUrl(i) {
-  if (bookUrls.has(i)) return bookUrls.get(i)
+async function pageUrl(i, allowPrompt = false) {
+  if (bookUrls.has(i)) {
+    const url = bookUrls.get(i)
+    bookUrls.delete(i); bookUrls.set(i, url)
+    return url
+  }
+  if (pendingPageUrls.has(i)) {
+    const version = generation
+    const pending = pendingPageUrls.get(i)
+    const url = await pending.task
+    if (version !== generation) return null
+    if (url || !allowPrompt || pending.allowPrompt) return url
+    if (pendingPageUrls.get(i) === pending) pendingPageUrls.delete(i)
+    return pageUrl(i, true)
+  }
   const version = generation, activePdf = pdf, bookId = current
+  const task = loadPageUrl(i, version, activePdf, bookId, allowPrompt)
+  const pending = { task, allowPrompt }
+  pendingPageUrls.set(i, pending)
+  try { return await task } finally { if (pendingPageUrls.get(i) === pending) pendingPageUrls.delete(i) }
+}
+async function loadPageUrl(i, version, activePdf, bookId, allowPrompt) {
   let blob
   if (activePdf) {
     const p = await activePdf.getPage(i + 1), viewport = p.getViewport({ scale: 1.5 })
@@ -130,12 +169,17 @@ async function pageUrl(i) {
     await p.render({ canvas: surface, viewport }).promise
     blob = await new Promise(resolve => surface.toBlob(resolve, 'image/png'))
   } else {
-    const result = await window.reader.page(bookId, i, false)
+    const result = await window.reader.page(bookId, i, false, allowPrompt)
+    if (result.deferred) return null
     blob = new Blob([result.data])
   }
   const url = URL.createObjectURL(blob)
   if (version !== generation) { URL.revokeObjectURL(url); throw new Error('El libro ya se cerró.') }
   bookUrls.set(i, url)
+  while (bookUrls.size > 16) {
+    const oldest = bookUrls.keys().next().value
+    URL.revokeObjectURL(bookUrls.get(oldest)); bookUrls.delete(oldest)
+  }
   return url
 }
 async function startBook() {
@@ -145,7 +189,7 @@ async function startBook() {
   book3d = mod.createBook3D(bookHost, {
     total,
     src: () => '',
-    whenReady: (i, callback) => pageUrl(i).then(url => { if (version === generation) callback(url) }).catch(err => { error.textContent = err.message }),
+    whenReady: (i, callback) => pageUrl(i).then(url => { if (version === generation) callback(url) }).catch(err => { if (version === generation) { error.textContent = err.message; callback(null) } }),
     spreadOf: i => i === 0 ? [0] : [i % 2 ? i : i - 1, i % 2 ? i + 1 : i].filter(n => n < total),
     isWide: () => false,
     dir: () => 'rtl',
@@ -155,30 +199,40 @@ async function startBook() {
   if (!book3d) bookHost.hidden = true
 }
 async function showPage(direction = 0) {
+  const request = ++pageRequest, version = generation, bookId = current, selected = page, activePdf = pdf
+  const stale = () => request !== pageRequest || version !== generation
   if (book3d) {
+    try { await pageUrl(selected, true) } catch (err) { if (stale()) return; throw err }
+    if (stale()) return
     image.hidden = true; canvas.hidden = true
     if (direction) window.turnSound('low', direction)
-    book3d.show([page], direction)
-    await window.reader.progress(current, page)
+    book3d.show([selected], direction)
   } else {
-  image.hidden = Boolean(pdf)
-  canvas.hidden = !pdf
-  if (pdf) {
-    const pdfPage = await pdf.getPage(page + 1)
-    const viewport = pdfPage.getViewport({ scale: 1.5 })
-    canvas.width = viewport.width; canvas.height = viewport.height
-    await pdfPage.render({ canvas, viewport }).promise
-    await window.reader.progress(current, page)
-  } else {
-    const result = await window.reader.page(current, page)
-    if (imageUrl) URL.revokeObjectURL(imageUrl)
-    imageUrl = URL.createObjectURL(new Blob([result.data]))
-    image.src = imageUrl
+    image.hidden = Boolean(activePdf)
+    canvas.hidden = !activePdf
+    if (activePdf) {
+      const pdfPage = await activePdf.getPage(selected + 1)
+      const viewport = pdfPage.getViewport({ scale: 1.5 })
+      const surface = document.createElement('canvas')
+      surface.width = viewport.width; surface.height = viewport.height
+      await pdfPage.render({ canvas: surface, viewport }).promise
+      if (stale()) return
+      canvas.width = surface.width; canvas.height = surface.height
+      canvas.getContext('2d').drawImage(surface, 0, 0)
+    } else {
+      const result = await window.reader.page(bookId, selected, false)
+      if (stale()) return
+      if (imageUrl) URL.revokeObjectURL(imageUrl)
+      imageUrl = URL.createObjectURL(new Blob([result.data]))
+      image.src = imageUrl
+    }
   }
-  }
-  document.querySelector('#counter').textContent = `${page + 1} / ${total}`
-  document.querySelector('#previous').disabled = page === 0
-  document.querySelector('#next').disabled = page === total - 1
+  if (stale()) return
+  await window.reader.progress(bookId, selected)
+  if (stale()) return
+  document.querySelector('#counter').textContent = `${selected + 1} / ${total}`
+  document.querySelector('#previous').disabled = selected === 0
+  document.querySelector('#next').disabled = selected === total - 1
   updateDesktopMenu()
 }
 function updateDesktopMenu() {
@@ -252,8 +306,18 @@ document.querySelector('#wallpaper').onclick = () => attempt(async () => {
 })
 document.querySelector('#wallpaper-remove').onclick = () => attempt(async () => { await window.reader.removeWallpaper(displaySelect.value); await refreshStatus() })
 document.querySelector('#back').onclick = () => attempt(showLibrary)
-document.querySelector('#previous').onclick = () => attempt(async () => { if (page > 0) { page--; await showPage(-1) } })
-document.querySelector('#next').onclick = () => attempt(async () => { if (page < total - 1) { page++; await showPage(1) } })
+async function movePage(direction) {
+  const previous = page, target = page + direction, version = generation
+  if (target < 0 || target >= total) return
+  page = target
+  const task = showPage(direction), request = pageRequest
+  try { await task } catch (err) {
+    if (version === generation && request === pageRequest) { page = previous; updateDesktopMenu() }
+    throw err
+  }
+}
+document.querySelector('#previous').onclick = () => attempt(() => movePage(-1))
+document.querySelector('#next').onclick = () => attempt(() => movePage(1))
 bookHost.onclick = event => { if (event.clientX < innerWidth / 2) document.querySelector('#next').click(); else document.querySelector('#previous').click() }
 document.addEventListener('keydown', event => { if (!viewer.hidden && event.key === 'ArrowLeft') document.querySelector('#next').click(); if (!viewer.hidden && event.key === 'ArrowRight') document.querySelector('#previous').click() })
 document.querySelector('#menu-collections').onclick = () => attempt(showMenuCollections)

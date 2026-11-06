@@ -91,7 +91,7 @@ function detectFaces(cascade, data, w, h, { scale = 1.1, minNeighbors = 5, minSi
 let cascade = null
 self.onmessage = async ({ data: { id, pixels, w, h } }) => {
   try {
-    cascade ||= await fetch(`/animeface-cascade.json${self.location.search}`).then(r => { if (!r.ok) throw new Error(r.status); return r.json() })
+    cascade ||= await fetch(new URL('./animeface-cascade.json', self.location.href)).then(r => { if (!r.ok) throw new Error(r.status); return r.json() })
     self.postMessage({ id, faces: detectFaces(cascade, new Uint8ClampedArray(pixels), w, h, { minNeighbors: 3 }) })
   } catch (e) { self.postMessage({ id, faces: null }) }
 }

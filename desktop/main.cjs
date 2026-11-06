@@ -6,6 +6,10 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const { pages, rar } = require('./archive.cjs')
 const { ALL, createCollection, setMembership, booksFor } = require('./collections.cjs')
+const { secureWindow } = require('./window-security.cjs')
+const { waitForReady } = require('./process-ready.cjs')
+const { validLibrary, validCollections } = require('./storage-validation.cjs')
+const { createLargeFileGuard } = require('./large-files.cjs')
 
 let library = []
 let win
@@ -15,6 +19,19 @@ let collectionWrites = Promise.resolve()
 let libraryWrites = Promise.resolve()
 let tray
 let quitting = false
+const largeFiles = createLargeFileGuard({
+  stat: file => fs.stat(file),
+  confirm: async ({ kind, bytes, title }) => {
+    const size = (bytes / (1024 * 1024)).toFixed(1)
+    const result = await dialog.showMessageBox({
+      type: 'warning', title: 'Contenido grande',
+      message: `${kind === 'página' ? 'La' : 'El'} ${kind} de «${title}» ocupa aproximadamente ${size} MiB.`,
+      detail: 'Procesarlo puede usar mucha memoria y tardar. Puedes continuar si tu equipo tiene recursos suficientes.',
+      buttons: ['Continuar', 'Cancelar'], defaultId: 1, cancelId: 1, noLink: true
+    })
+    return result.response === 0
+  }
+})
 const singleInstance = app.requestSingleInstanceLock()
 if (!singleInstance) app.quit()
 app.on('second-instance', () => { if (win && !win.isDestroyed()) { win.show(); win.focus() } })
@@ -48,7 +65,7 @@ function save() {
 app.whenReady().then(async () => {
   try {
     library = JSON.parse(await fs.readFile(indexPath(), 'utf8'))
-    if (!Array.isArray(library)) throw new Error('Formato de biblioteca inválido')
+    if (!validLibrary(library)) throw new Error('Formato de biblioteca inválido')
   } catch (error) {
     if (error.code !== 'ENOENT') {
       dialog.showErrorBox('No se pudo abrir la biblioteca', `${error.message}\nLos datos originales se conservaron.`)
@@ -58,7 +75,7 @@ app.whenReady().then(async () => {
   }
   try {
     collections = JSON.parse(await fs.readFile(collectionsPath(), 'utf8'))
-    if (!Array.isArray(collections) || !collections.every(item => typeof item.id === 'string' && typeof item.name === 'string' && Array.isArray(item.bookIds))) throw new Error('Formato de listas inválido')
+    if (!validCollections(collections)) throw new Error('Formato de listas inválido')
   } catch (error) {
     if (error.code !== 'ENOENT') {
       dialog.showErrorBox('No se pudieron abrir las listas', `${error.message}\nLos datos originales se conservaron.`)
@@ -66,6 +83,7 @@ app.whenReady().then(async () => {
     }
   }
   win = new BrowserWindow({ width: 1200, height: 800, minWidth: 700, minHeight: 500, backgroundColor: '#171411', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } })
+  secureWindow(win)
   tray = new Tray(path.join(__dirname, 'icon.png'))
   tray.setToolTip('Manga Desktop')
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -87,7 +105,7 @@ app.whenReady().then(async () => {
     if (!win.isDestroyed()) win.webContents.send('displays-changed')
   })
   await win.loadFile(path.join(__dirname, 'index.html'))
-})
+}).catch(error => { dialog.showErrorBox('No se pudo iniciar Manga Desktop', error.message); app.quit() })
 app.on('window-all-closed', () => app.quit())
 ipcMain.handle('library', (_event, collectionId = ALL) => booksFor(library, collections, collectionId).map(({ id, title, page, type }) => ({ id, title, page, type })))
 ipcMain.handle('collections', () => [{ id: ALL, name: 'Toda la biblioteca' }, ...collections])
@@ -126,6 +144,7 @@ ipcMain.handle('remove', async (_event, id) => {
 })
 ipcMain.handle('open', async (_event, id) => {
   const book = getBook(id)
+  await largeFiles.ensure(book)
   if (book.type === 'pdf') return { title: book.title, type: book.type, page: book.page, data: await fs.readFile(book.path) }
   const entries = book.type === 'cbr' ? await rar(book.path) : pages(book.path)
   if (!entries.length) throw new Error('El archivo no contiene páginas de imagen.')
@@ -134,17 +153,28 @@ ipcMain.handle('open', async (_event, id) => {
 ipcMain.handle('cover', async (_event, id) => {
   const book = getBook(id)
   if (book.type === 'pdf') return null
+  if (!await largeFiles.canPreview(book)) return null
   const entries = book.type === 'cbr' ? await rar(book.path) : pages(book.path)
   const entry = entries[0]
-  if (!entry || (entry.header?.size ?? entry.unpSize) > 16 * 1024 * 1024) return null
+  if (!entry || !await largeFiles.canPreview(book, entry.header?.size ?? entry.unpSize)) return null
   return book.type === 'cbr' ? await rar(book.path, entry.name) : entry.getData()
 })
-ipcMain.handle('page', async (_event, id, number, remember = true) => {
+ipcMain.handle('pdf-cover', async (_event, id) => {
   const book = getBook(id)
+  if (book.type !== 'pdf') throw new Error('El archivo no es un PDF.')
+  if (!await largeFiles.canPreview(book)) return null
+  return fs.readFile(book.path)
+})
+ipcMain.handle('page', async (_event, id, number, remember = true, allowPrompt = true) => {
+  const book = getBook(id)
+  if (allowPrompt) await largeFiles.ensure(book)
+  else if (!await largeFiles.canPreview(book)) return { deferred: true }
   const entries = book.type === 'cbr' ? await rar(book.path) : pages(book.path)
   if (!Number.isInteger(number) || number < 0 || number >= entries.length) throw new Error('Página fuera de rango.')
   const entry = entries[number]
-  if ((entry.header?.size ?? entry.unpSize) > 64 * 1024 * 1024) throw new Error('La página excede el límite de 64 MB.')
+  const size = entry.header?.size ?? entry.unpSize
+  if (allowPrompt) await largeFiles.ensure(book, size)
+  else if (!await largeFiles.canPreview(book, size)) return { deferred: true }
   const data = book.type === 'cbr' ? await rar(book.path, entry.name) : entry.getData()
   if (remember) { book.page = number; await save() }
   return { data, name: entry.entryName || entry.name }
@@ -177,6 +207,7 @@ ipcMain.handle('wallpaper', async (_event, displayId, collectionId) => {
   booksFor(library, collections, collectionId)
   const key = String(display.id), previous = wallpapers.get(key)
   const wallpaper = new BrowserWindow({ ...display.bounds, frame: false, skipTaskbar: true, show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } })
+  secureWindow(wallpaper)
   const item = { window: wallpaper, collectionId, mouseForwarder: null }
   wallpaper.on('closed', () => { item.mouseForwarder?.kill(); if (wallpapers.get(key) === item) wallpapers.delete(key) })
   try {
@@ -189,12 +220,8 @@ ipcMain.handle('wallpaper', async (_event, displayId, collectionId) => {
     const inputScript = path.join(__dirname, 'mouse-forward.ps1').replace('app.asar', 'app.asar.unpacked')
     const mouseForwarder = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', inputScript, '-WindowHandle', handle], { windowsHide: true })
     item.mouseForwarder = mouseForwarder
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('No respondió el control de interacción.')), 10000)
-      mouseForwarder.once('error', error => { clearTimeout(timer); reject(error) })
-      mouseForwarder.once('exit', code => { clearTimeout(timer); if (code) reject(new Error(`Falló el control de interacción (${code}).`)) })
-      mouseForwarder.stdout.once('data', () => { clearTimeout(timer); resolve() })
-    })
+    mouseForwarder.on('error', error => console.error('Error del control de interacción:', error))
+    await waitForReady(mouseForwarder)
     if (previous && !previous.window.isDestroyed()) previous.window.destroy()
     wallpapers.set(key, item)
     return { collectionId }

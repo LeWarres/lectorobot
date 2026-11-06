@@ -6,10 +6,10 @@
   "main": "desktop/main.cjs",
   "scripts": {
     "start": "electron .",
+    "test": "node --test",
     "dist": "electron-builder --win portable"
   },
   "dependencies": {
-    "7zip-bin": "5.2.0",
     "adm-zip": "0.6.1",
     "node-unrar-js": "^2.0.2",
     "pdfjs-dist": "^6.5.438"
@@ -24,12 +24,10 @@
     "files": [
       "desktop/**/*",
       "node_modules/adm-zip/**/*",
-      "node_modules/7zip-bin/**/*",
       "node_modules/node-unrar-js/**/*",
       "node_modules/pdfjs-dist/build/**/*"
     ],
     "asarUnpack": [
-      "node_modules/7zip-bin/**/*",
       "desktop/wallpaper.ps1",
       "desktop/mouse-forward.ps1"
     ],

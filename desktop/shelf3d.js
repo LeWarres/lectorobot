@@ -426,7 +426,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
   }
   function startFaceWorker() {
     try {
-      faceWorker = new Worker(`/animeface.js${new URL(import.meta.url).search}`)
+      faceWorker = new Worker(new URL('./animeface.js', import.meta.url))
       faceWorker.onerror = () => { faceWorker?.terminate(); faceWorker = false; faceBusy = false; faceWaiting.length = 0 }
     } catch { faceWorker = false }
     return faceWorker

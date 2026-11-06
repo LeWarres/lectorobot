@@ -20,6 +20,17 @@ test('CBZ ordena páginas numéricamente y omite otros archivos', () => {
   }
 })
 
+test('actualiza las páginas si cambia el CBZ', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'manga-cache-test-'))
+  try {
+    const file = path.join(directory, 'test.cbz')
+    const first = new AdmZip(); first.addFile('1.png', Buffer.from('a')); first.writeZip(file)
+    assert.deepEqual(pages(file).map(entry => entry.entryName), ['1.png'])
+    const second = new AdmZip(); second.addFile('2.png', Buffer.from('a')); second.addFile('3.png', Buffer.from('b')); second.writeZip(file)
+    assert.deepEqual(pages(file).map(entry => entry.entryName), ['2.png', '3.png'])
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
 const rarTool = process.env.RAR_EXE
 test('CBR enumera y extrae páginas', { skip: !rarTool || !fs.existsSync(rarTool) }, async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'manga-rar-test-'))

@@ -20,21 +20,25 @@ public static class DesktopMouse {
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint flags);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder value, int length);
   [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, Child callback, IntPtr state);
+  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+  [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr child);
   [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr window, ref Point point);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out Rect rect);
   [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
-  static IntPtr target, hook; static Hook callback = OnMouse; static bool down;
+  static IntPtr target, hook, widget; static Hook callback = OnMouse; static bool down;
   static string Class(IntPtr window) { var value = new StringBuilder(256); GetClassName(window, value, value.Capacity); return value.ToString(); }
   static IntPtr OnMouse(int code, IntPtr message, IntPtr data) {
     long kind = message.ToInt64();
     if (code >= 0 && (kind == 0x200 || kind == 0x201 || kind == 0x202)) {
       var mouse = (Mouse)Marshal.PtrToStructure(data, typeof(Mouse));
       Rect rect;
-      if (!GetWindowRect(target, out rect) || mouse.point.x < rect.left || mouse.point.x >= rect.right || mouse.point.y < rect.top || mouse.point.y >= rect.bottom) return CallNextHookEx(hook, code, message, data);
-      string root = Class(GetAncestor(WindowFromPoint(mouse.point), 2));
-      if (root == "Progman" || root == "WorkerW") {
-        IntPtr widget = IntPtr.Zero;
-        EnumChildWindows(target, (w, s) => { if (Class(w) == "Chrome_RenderWidgetHostHWND") { widget = w; return false; } return true; }, IntPtr.Zero);
+      bool inside = GetWindowRect(target, out rect) && mouse.point.x >= rect.left && mouse.point.x < rect.right && mouse.point.y >= rect.top && mouse.point.y < rect.bottom;
+      string root = inside ? Class(GetAncestor(WindowFromPoint(mouse.point), 2)) : "";
+      if (root == "Progman" || root == "WorkerW" || (kind == 0x202 && down)) {
+        if (widget == IntPtr.Zero || !IsWindow(widget) || !IsChild(target, widget)) {
+          widget = IntPtr.Zero;
+          EnumChildWindows(target, (w, s) => { if (Class(w) == "Chrome_RenderWidgetHostHWND") { widget = w; return false; } return true; }, IntPtr.Zero);
+        }
         if (widget != IntPtr.Zero) {
           if (kind == 0x201) down = true;
           if (kind == 0x202) down = false;
@@ -43,6 +47,7 @@ public static class DesktopMouse {
           PostMessage(widget, (uint)kind, down ? new IntPtr(1) : IntPtr.Zero, new IntPtr(packed));
         }
       }
+      if (kind == 0x202) down = false;
     }
     return CallNextHookEx(hook, code, message, data);
   }

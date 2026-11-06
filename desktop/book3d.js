@@ -620,6 +620,7 @@ export function createBook3D(container, opts) {
     loading.set(i, true)
     const epoch = glEpoch
     const go = url => {
+      if (!url) { if (epoch === glEpoch) loading.delete(i); return }
       const im = new Image()
       im.onload = async () => {
         await im.decode?.().catch(() => {})
