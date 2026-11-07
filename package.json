@@ -2,12 +2,13 @@
   "name": "manga-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Lector de manga local para Windows",
+  "description": "Lector de manga local para Windows y Linux",
   "main": "desktop/main.cjs",
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "dist": "electron-builder --win portable"
+    "dist": "electron-builder --win portable",
+    "dist:linux": "electron-builder --linux AppImage"
   },
   "dependencies": {
     "adm-zip": "0.6.1",
@@ -36,6 +37,13 @@
     ],
     "win": {
       "target": "portable"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Graphics",
+      "icon": "desktop/icon.png"
     }
   }
 }

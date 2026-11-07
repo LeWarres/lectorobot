@@ -2,7 +2,7 @@ function validLibrary(value) {
   if (!Array.isArray(value)) return false
   const ids = new Set()
   return value.every(book => {
-    if (!book || typeof book.id !== 'string' || !book.id || ids.has(book.id) || typeof book.title !== 'string' || typeof book.path !== 'string' || typeof book.type !== 'string' || !Number.isInteger(book.page) || book.page < 0) return false
+    if (!book || typeof book.id !== 'string' || !book.id || ids.has(book.id) || typeof book.title !== 'string' || typeof book.path !== 'string' || typeof book.type !== 'string' || !Number.isInteger(book.page) || book.page < 0 || (book.type === 'steam' && (typeof book.appid !== 'string' || !/^\d+$/.test(book.appid)))) return false
     ids.add(book.id)
     return true
   })

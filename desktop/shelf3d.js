@@ -89,10 +89,15 @@ export function layoutShelf(works, rowWidth, sizeOf = () => bookSize()) {
     rows.at(-1).push({ ...item, x, w })
     x += w
   }
+  let previous = null
   for (const work of works) {
-    if (rows.at(-1).length) x += SHELF.GAP
+    // Las cajas apiladas van pegadas unas a otras; entre las demás obras queda un hueco.
+    // rowBreak: la obra empieza balda nueva (p. ej. los juegos sin instalar, en su propio estante).
+    if (work.rowBreak && rows.at(-1).length) { rows.push([]); x = 0 }
+    else if (rows.at(-1).length && !(work.spineOut && previous?.spineOut)) x += SHELF.GAP
+    previous = work
     const vols = work.vols?.length ? work.vols : [{ vol: null, chapters: [], thumb: work.cover }]
-    const face = faceIndex(vols, work.chapterId), { h, d } = sizeOf(work)
+    const face = work.spineOut ? -1 : faceIndex(vols, work.chapterId), { h, d } = sizeOf(work) // spineOut: todo de lomo, como cajas apiladas
     vols.forEach((vol, i) => {
       const isFace = i === face, t = spineWidth(vol.pages, vol.chapters?.length)
       place({ work, vol, face: isFace, h, d, t }, isFace ? d : t)
@@ -113,7 +118,7 @@ precision highp float;
 uniform int uKind;
 uniform sampler2D uTex;
 uniform vec3 uColor;
-uniform float uHas, uPitch, uDepth, uDim, uAlpha;
+uniform float uHas, uPitch, uDepth, uDim, uAlpha, uWrap;
 uniform vec4 uSpot; // mesa: centro del tomo y radio de la luz
 uniform vec2 uTab; // mesa propia: escala de la foto; sin ella, madera repetida
 uniform vec2 uSize;
@@ -153,13 +158,42 @@ void main() {
   float shade = mix(0.5, 1.0, smoothstep(0.0, 0.95, z)) * mix(mix(0.5, 1.0, z), 1.0, smoothstep(0.62, 0.98, 1.0 - under));
   vec2 q = gl_FragCoord.xy / uSize - 0.5;
   float room = 1.0 - 0.34 * smoothstep(0.25, 0.8, length(q * vec2(1.0, 0.8)));
-  color = vec4(c * lit * shade * room * uDim * vec3(1.03, 1.0, 0.95), uAlpha);
+  vec3 outC = c * lit * shade * room * uDim * vec3(1.03, 1.0, 0.95);
+  if (uWrap > 0.5) {
+    // Envuelto en plástico: un velo claro, un reflejo ancho que se mueve al girar, vetas y arrugas finas.
+    vec3 N = normalize(vNor);
+    float sheen = pow(max(dot(N, normalize(L + vec3(0.3, 0.15, 0.7))), 0.0), 16.0);
+    // Reflejos anchos e irregulares (dos ondas lentas que se cruzan), no rayas: el film no es liso.
+    float w = sin(vPos.x * 5.3 + vPos.y * 2.1 + sin(vPos.y * 3.7 + vPos.z * 4.0) * 1.6) * sin(vPos.y * 1.7 - vPos.x * 2.9 + 0.8);
+    float band = smoothstep(0.55, 0.95, w);
+    float crease = fract(sin(dot(floor(vPos * vec3(70.0, 9.0, 70.0)), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+    outC = mix(outC, vec3(0.86, 0.9, 0.97) * uDim, 0.12) + (sheen * 0.35 + band * 0.06 + crease * 0.015) * uDim;
+  }
+  color = vec4(outC, uAlpha);
 }`
 
 // Un cuadrilátero: origen, dos lados, normal y coordenadas de textura en sus esquinas.
 function quad(sh, o, a, b, n, uv = [0, 0, 1, 1]) {
   sh.grid(1, 1, (c, r) => [o[0] + a[0] * c + b[0] * r, o[1] + a[1] * c + b[1] * r, o[2] + a[2] * c + b[2] * r, ...n, uv[0] + (uv[2] - uv[0]) * c, uv[1] + (uv[3] - uv[1]) * r])
 }
+// Lomo redondeado, como el de una caja de DVD o un libro de tapa dura: un arco de «o» a «o + a», alto «b»,
+// que sobresale «bulge» hacia «out». Las normales siguen la curva para que la luz la marque.
+function roundSpine(sh, o, a, b, out, bulge, uv = [0, 0, 1, 1], N = 10) {
+  const len = Math.hypot(...a), ah = a.map(v => v / len)
+  sh.grid(N, 1, (c, r) => {
+    const s = c / N, th = Math.PI * (s - 0.5), k = bulge * Math.cos(th)
+    const n = ah.map((v, i) => v * bulge * Math.PI * Math.sin(th) + out[i] * len), m = Math.hypot(...n)
+    return [0, 1, 2].map(i => o[i] + a[i] * s + b[i] * r + out[i] * k).concat(n.map(v => v / m), [uv[0] + (uv[2] - uv[0]) * s, uv[1] + (uv[3] - uv[1]) * r])
+  })
+}
+// La tapa (arriba o abajo) que cierra la curva del lomo contra el resto de la caja.
+function spineCap(sh, o, a, out, bulge, n, uv = [0, 0, 0, 0], N = 10) {
+  sh.grid(N, 1, (c, r) => {
+    const s = c / N, k = bulge * Math.cos(Math.PI * (s - 0.5)) * r
+    return [0, 1, 2].map(i => o[i] + a[i] * s + out[i] * k).concat(n, [uv[0], uv[1]])
+  })
+}
+const ROUND = 0.22 // lo que abomba el lomo de una caja, en grosores
 const hash = s => { let h = 7; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) | 0; return Math.abs(h) }
 const hsl = (h, s, l) => { const a = s * Math.min(l, 1 - l), f = n => { const k = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)) }; return [f(0), f(8), f(4)] }
 
@@ -173,7 +207,9 @@ const keeper = () => (keepBox ||= typeof caches !== 'undefined' && globalThis.is
 const keptKey = (kind, url) => `/__shelf/${kind}?u=${encodeURIComponent(url)}`
 export const keptBlob = (kind, url) => keeper().then(c => c?.match(keptKey(kind, url))).then(r => (r ? r.blob() : null)).catch(() => null)
 export const keepBlob = (kind, url, blob) => keeper().then(c => c?.put(keptKey(kind, url), new Response(blob, { headers: { 'content-type': blob.type || 'image/jpeg' } }))).catch(() => {})
-const STRIP_PER_UNIT = 440, STRIP_MAX = 2048, STRIP_H = 512, IMG_AT_ONCE = 4 // ancho de la tira según el de la fila; más de 2048 no se nota y gasta memoria
+// Resolución de la tira de lomos de cada fila: con muchos lomos finos (cajas de juegos) cada uno necesita sus píxeles para
+// que logos y letras se lean nítidos, también con zoom. Unos 20-30 MB de textura por fila construida.
+const STRIP_PER_UNIT = 900, STRIP_MAX = 6144, STRIP_H = 1280, IMG_AT_ONCE = 4
 const blurBox = typeof document === 'undefined' ? null : document.createElement('canvas') // de paso, para desenfocar bajo las letras
 const ART_SKIP = 0.26, FACE_INPUT = 360 // sin rostro se salta lo alto de la portada; ancho con que se buscan los rostros
 const ART_RATIO = 0.14, ART_H = 512, ART_KEEP = 240 // franja guardada: algo más ancha que el lomo más grueso
@@ -205,7 +241,7 @@ const FLY_MS = 900
 const PEEK_OPEN_MS = 720, PEEK_CLOSE_MS = 520, PEEK_SLIDE = 0.34 // el tomo sale recto de la fila y luego gira hacia la cámara
 const ZOOM_MAX = 3, ORBIT_TILT = 10, ORBIT_YAW = 18, ORBIT_BACK = 0.08, REST_TILT = -3, FRICTION_MS = 320
 
-export function createShelf3D(container, lib, { works: firstWorks = [], rowsLandscape = 2.3, rowsPortrait = 3, still = false, pagesOf = null, onPeek = null, onOpen = null, table = null } = {}) {
+export function createShelf3D(container, lib, { works: firstWorks = [], rowsLandscape = 2.3, rowsPortrait = 3, still = false, pagesOf = null, onPeek = null, onOpen = null, table = null, boxArtOf = null, noteFor = () => true } = {}) {
   const { Shape, woodCanvas, cameraMatrix, project, FOV, coverPalette, inkOn, css, createTilt, MAX_DEG } = lib
   const canvas = document.createElement('canvas')
   canvas.className = 'shelfcanvas'
@@ -267,10 +303,11 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog) || 'shader')
     gl.useProgram(prog)
     u = {}
-    for (const n of ['uM', 'uModel', 'uKind', 'uTex', 'uColor', 'uHas', 'uPitch', 'uDepth', 'uSize', 'uDim', 'uHide', 'uAlpha', 'uSpot', 'uTab']) u[n] = gl.getUniformLocation(prog, n)
+    for (const n of ['uM', 'uModel', 'uKind', 'uTex', 'uColor', 'uHas', 'uPitch', 'uDepth', 'uSize', 'uDim', 'uHide', 'uAlpha', 'uSpot', 'uTab', 'uWrap']) u[n] = gl.getUniformLocation(prog, n)
     gl.uniform1i(u.uTex, 0)
     gl.uniformMatrix4fv(u.uModel, false, IDENTITY)
     gl.uniform1f(u.uDim, 1)
+    gl.uniform1f(u.uWrap, 0)
     gl.uniform1f(u.uAlpha, 1)
     gl.uniform4f(u.uHide, 0, 0, 0, 0)
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
@@ -367,6 +404,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
       imgBusy++
       const im = new Image()
       im.decoding = 'async'
+      if (/^tome:/.test(url)) im.crossOrigin = 'anonymous' // caras de tomos: se pintan en WebGL
       // Una imagen que no acaba (una fuente colgada) no puede tapar la cola: a los 15 s deja su hueco, y si llega luego se usa igual.
       let freed = false
       const free = () => { if (!freed) { freed = true; imgBusy--; clearTimeout(slow); pumpImages() } }
@@ -546,6 +584,17 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
   }
   // Los lomos de una fila se dibujan juntos en una tira: una textura por fila, por muchos tomos que tenga.
   const stripWidth = () => Math.max(512, Math.min(STRIP_MAX, maxTex, Math.round(rowWidth * STRIP_PER_UNIT)))
+  // ----- Lomos propios de las obras (las cajas de los juegos), por id -----
+  const spineImgs = new Map(), spineUrls = new Map()
+  function setSpine(id, url) {
+    if (!url || spineUrls.get(id) === url) return
+    spineUrls.set(id, url)
+    loadImage(url, im => {
+      if (!im || dead || spineUrls.get(id) !== url) return
+      spineImgs.set(id, im)
+      for (const b of built.values()) if ((rows[b.k] || []).some(i => i.work.id === id)) b.repaint?.()
+    })
+  }
   // ----- Logos de las obras (Wikimedia Commons, por el proxy propio para poder pintarlos en la tira) -----
   const logos = new Map()
   function logoLight(im) {
@@ -579,6 +628,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     const out = []
     let free = 0.02
     for (const n of groups) {
+      if (!noteFor(n.work)) continue // obras sin pósit (p. ej. los juegos); el código se conserva para las demás
       const span = n.x1 - n.x0, w = Math.max(0.26, Math.min(0.42, span * 0.85))
       let x = Math.max(free, n.x0 + Math.min(0.03, span * 0.1))
       if (x + w > rowWidth - 0.02) x = rowWidth - 0.02 - w
@@ -609,7 +659,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
       g.fillStyle = ink
       g.textAlign = 'center'
       g.textBaseline = 'middle'
-      const title = shortTitle(n.work.title), font = px => `${weight} ${Math.round(px)}px "${family}", cursive`
+      const title = shortTitle(n.work.noteTitle ?? n.work.title), font = px => `${weight} ${Math.round(px)}px "${family}", cursive`
       let size = H * 0.5 * scale
       g.font = font(size)
       const room = W * 0.9
@@ -657,6 +707,30 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
       if (it.face) continue
       const { base, accent } = paletteOf(it)
       const x = it.x * toPx, w = it.w * toPx, PX = STRIP_H / it.h
+      const own = spineImgs.get(it.work.id)
+      if (own) {
+        // La obra trae su propio lomo (la caja de un juego): se pinta entero, de pie; uno apaisado se gira para leerse de arriba abajo.
+        g.setTransform(1, 0, 0, 1, x, 0)
+        g.imageSmoothingEnabled = true
+        g.imageSmoothingQuality = 'high'
+        if (own.naturalWidth > own.naturalHeight) { g.translate(w, 0); g.rotate(Math.PI / 2); g.drawImage(own, 0, 0, STRIP_H, w) }
+        else g.drawImage(own, 0, 0, w, STRIP_H)
+        g.setTransform(1, 0, 0, 1, x, 0)
+        const shine = g.createLinearGradient(0, 0, w, 0)
+        shine.addColorStop(0, 'rgba(0,0,0,.3)'); shine.addColorStop(0.35, 'rgba(255,255,255,.08)'); shine.addColorStop(1, 'rgba(0,0,0,.3)')
+        g.fillStyle = shine
+        g.fillRect(0, 0, w, STRIP_H)
+        if (it.work.wrapped) {
+          // Las soldaduras del plástico, arriba y abajo, algo arrugadas.
+          g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = Math.max(1, STRIP_H * 0.003)
+          for (const y0 of [STRIP_H * 0.012, STRIP_H * 0.988]) {
+            g.beginPath()
+            for (let i = 0; i <= 6; i++) g.lineTo((w * i) / 6, y0 + Math.sin(i * 2.3 + hash(it.work.id)) * STRIP_H * 0.004)
+            g.stroke()
+          }
+        }
+        continue
+      }
       // Se escribe en unidades de la pantalla: en una fila estrecha la tira se estira a lo ancho y el texto se deformaría.
       const sx = toPx / PX, wText = it.w * PX
       g.setTransform(1, 0, 0, 1, x, 0)
@@ -772,15 +846,21 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
         faces.push({ it, mesh: makeMesh(sh), edge: makeMesh(edge), pages: makeMesh(pages) })
         continue
       }
-      quad(spines, [x0, base + H, F], [it.w, 0, 0], [0, -H, 0], [0, 0, 1], [U0, 0, U1, 1])
       // Los costados son las tapas: un solo color del lomo, no una columna de la tira estirada a lo largo del fondo.
-      const Um = (U0 + U1) / 2, side = [Um, 0.02, Um, 0.02]
+      // En una caja, la franja de arriba es la etiqueta («PC»): el color de sus costados sale del centro del lomo.
+      const Um = (U0 + U1) / 2, sv = it.work.spineOut ? 0.5 : 0.02, side = [Um, sv, Um, sv]
+      if (it.work.spineOut) {
+        // Caja: lomo abombado, cerrado por arriba.
+        roundSpine(spines, [x0, base + H, F], [it.w, 0, 0], [0, -H, 0], [0, 0, 1], it.w * ROUND, [U0, 0, U1, 1])
+        spineCap(spines, [x0, base + H, F], [it.w, 0, 0], [0, 0, 1], it.w * ROUND, [0, 1, 0], side)
+      } else quad(spines, [x0, base + H, F], [it.w, 0, 0], [0, -H, 0], [0, 0, 1], [U0, 0, U1, 1])
       quad(spines, [x0, base, F - D], [0, 0, D], [0, H, 0], [-1, 0, 0], side)
       quad(spines, [x1, base, F], [0, 0, -D], [0, H, 0], [1, 0, 0], side)
-      quad(paper, [x0, base + H, F - D], [it.w, 0, 0], [0, 0, D], [0, 1, 0], [0, it.w, it.w, it.w]) // u: a lo ancho, en el mueble; v: el grosor
+      if (it.work.spineOut) quad(spines, [x0, base + H, F - D], [it.w, 0, 0], [0, 0, D], [0, 1, 0], side) // la caja, cerrada por arriba: sin hojas
+      else quad(paper, [x0, base + H, F - D], [it.w, 0, 0], [0, 0, D], [0, 1, 0], [0, it.w, it.w, it.w]) // u: a lo ancho, en el mueble; v: el grosor
     }
     paintStrip(row, strip)
-    const b = { k, key: rowKey(row), strip, tex: texFrom(strip), spines: spines.i.length ? makeMesh(spines) : null, paper: paper.i.length ? makeMesh(paper) : null, faces, stale: 0 }
+    const b = { k, wrapped: row.length > 0 && row.every(it => it.work.wrapped), key: rowKey(row), strip, tex: texFrom(strip), spines: spines.i.length ? makeMesh(spines) : null, paper: paper.i.length ? makeMesh(paper) : null, faces, stale: 0 }
     built.set(k, b)
     buildNotes(b, k)
     // Colores y portadas, de poco en poco: lo de fuera de la vista espera.
@@ -956,7 +1036,9 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
       if (b.spines) {
         gl.uniform1i(u.uKind, 1)
         gl.bindTexture(gl.TEXTURE_2D, b.tex)
+        gl.uniform1f(u.uWrap, b.wrapped ? 1 : 0) // una balda de juegos sin instalar: todos con su plástico
         drawMesh(b.spines)
+        gl.uniform1f(u.uWrap, 0)
       }
       if (b.notes) {
         gl.uniform1i(u.uKind, 1)
@@ -1001,6 +1083,50 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
   const ease = t => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2)
   const lerp3 = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t)
   // Caja centrada en el origen con la portada hacia +z y el lomo a la derecha (+x), como un manga: en la fila, la portada mira a la izquierda.
+  // El canto por donde se abre una caja: plástico negro, la junta entre la tapa y la base y la muesca para el dedo.
+  let openingTex = null
+  function openingTexture() {
+    if (openingTex) return openingTex
+    const c = Object.assign(document.createElement('canvas'), { width: 128, height: 1024 }), g = c.getContext('2d'), W = c.width, H = c.height
+    const body = g.createLinearGradient(0, 0, W, 0)
+    body.addColorStop(0, '#1a1b1f'); body.addColorStop(0.5, '#111215'); body.addColorStop(1, '#0c0d0f')
+    g.fillStyle = body; g.fillRect(0, 0, W, H)
+    // La tapa es fina: su junta con la base, cerca del frente, con un brillo justo detrás.
+    const seam = W * 0.2
+    g.fillStyle = '#030304'; g.fillRect(seam - 3, 0, 5, H)
+    g.fillStyle = 'rgba(255,255,255,.16)'; g.fillRect(seam + 2, 0, 2, H)
+    // Muesca a media altura: un hueco ovalado que entra en la tapa y en la base.
+    const cy = H / 2, ry = H * 0.045, rx = W * 0.62
+    const hole = g.createRadialGradient(0, cy, 4, 0, cy, rx)
+    hole.addColorStop(0, '#000'); hole.addColorStop(0.7, '#060607'); hole.addColorStop(1, '#16171a')
+    g.fillStyle = hole
+    g.beginPath(); g.ellipse(0, cy, rx, ry, 0, -Math.PI / 2, Math.PI / 2); g.fill()
+    g.strokeStyle = 'rgba(255,255,255,.22)'; g.lineWidth = 3
+    g.beginPath(); g.ellipse(0, cy, rx, ry, 0, -Math.PI / 2, Math.PI / 2); g.stroke()
+    // Relieve antideslizante encima y debajo de la muesca.
+    g.fillStyle = 'rgba(255,255,255,.07)'
+    for (let i = 1; i <= 6; i++) for (const sgn of [-1, 1]) g.fillRect(W * 0.3, cy + sgn * (ry + i * 14), W * 0.55, 4)
+    openingTex = texFrom(c)
+    return openingTex
+  }
+  // Caja de DVD de un juego: el lomo, redondeado, a la izquierda (-x) como en las de verdad, y la tapa con su bisagra
+  // en él. Dentro, una sola textura: a la izquierda la cara interior de la tapa (con el manual) y a la derecha la
+  // bandeja con el disco.
+  function gameBox(W, H, T) {
+    const cover = new Shape(), spine = new Shape(), back = new Shape(), edges = new Shape(), tray = new Shape(), lidIn = new Shape(), opening = new Shape()
+    const X = W / 2, Y = H / 2, Z = T / 2, r = T * ROUND, m = W * 0.025
+    quad(cover, [-X, Y, Z], [W, 0, 0], [0, -H, 0], [0, 0, 1])
+    roundSpine(spine, [-X, Y, -Z], [0, 0, T], [0, -H, 0], [-1, 0, 0], r) // de atrás adelante: así se lee de pie mirándolo de frente
+    quad(back, [X, Y, -Z], [-W, 0, 0], [0, -H, 0], [0, 0, -1])
+    quad(edges, [-X, Y, -Z], [W, 0, 0], [0, 0, T], [0, 1, 0])
+    quad(edges, [-X, -Y, -Z], [W, 0, 0], [0, 0, T], [0, -1, 0])
+    quad(opening, [X, Y, Z], [0, 0, -T], [0, -H, 0], [1, 0, 0]) // el canto por donde se abre: u de delante atrás, v de arriba abajo
+    spineCap(edges, [-X, Y, -Z], [0, 0, T], [-1, 0, 0], r, [0, 1, 0])
+    spineCap(edges, [-X, -Y, -Z], [0, 0, T], [-1, 0, 0], r, [0, -1, 0])
+    quad(tray, [-X + m, Y - m, Z - T * 0.08], [W - 2 * m, 0, 0], [0, -(H - 2 * m), 0], [0, 0, 1], [0.5, 0, 1, 1])
+    quad(lidIn, [X, Y, Z - 0.0015], [-W, 0, 0], [0, -H, 0], [0, 0, -1], [0, 0, 0.5, 1])
+    return [cover, spine, back, edges, tray, lidIn, opening].map(makeMesh)
+  }
   function peekBox(W, H, T, U0, U1) {
     const cover = new Shape(), spine = new Shape(), back = new Shape(), paper = new Shape(), X = W / 2, Y = H / 2, Z = T / 2
     quad(cover, [-X, Y, Z], [W, 0, 0], [0, -H, 0], [0, 0, 1])
@@ -1035,12 +1161,21 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     if (!b) return
     if (peek) freePeek()
     const base = rowBase(k), out = !it.face, W = out ? it.d : it.w, H = it.h, T = out ? it.w : it.t
-    const from = out ? { pos: [it.x + it.w / 2, base + H / 2, SHELF.FRONT - it.d / 2], rot: -Math.PI / 2 } : { pos: [it.x + it.w / 2, base + H / 2, SHELF.FACE_Z - it.t / 2], rot: 0 }
+    // Una caja (juego) trae su propio lomo y contraportada, y su lomo está a la izquierda: sale girando al otro lado.
+    const boxArt = boxArtOf?.(it.work) || null
+    const from = out ? { pos: [it.x + it.w / 2, base + H / 2, SHELF.FRONT - it.d / 2], rot: boxArt ? Math.PI / 2 : -Math.PI / 2 } : { pos: [it.x + it.w / 2, base + H / 2, SHELF.FACE_Z - it.t / 2], rot: 0 }
     const mid = { pos: [from.pos[0], from.pos[1] + 0.006, from.pos[2] + (out ? it.d + 0.03 : 0.14)], rot: from.rot }
-    peek = { it, k, b, base, out, W, H, T, from, mid, to: { pos: peekTarget(W, H), rot: 0 }, box: peekBox(W, H, T, it.x / rowWidth, (it.x + it.w) / rowWidth), t: 0, dir: 1, at: performance.now(), tex: null, rank: -1 }
+    peek = { it, k, b, base, out, W, H, T, from, mid, to: { pos: peekTarget(W, H), rot: 0 }, box: boxArt ? gameBox(W, H, T) : peekBox(W, H, T, it.x / rowWidth, (it.x + it.w) / rowWidth), t: 0, dir: 1, at: performance.now(), tex: null, rank: -1, game: Boolean(boxArt), spin: 0, spinTo: 0, open: 0, openTo: 0, spineTex: null, backTex: null, insideTex: null }
     velocity = 0
     // Portada: primero la que ya hay, luego la grande.
     const p = peek, shared = covers.get(coverKey(it))
+    if (boxArt) Promise.resolve(boxArt).then(art => {
+      for (const side of ['spine', 'back', 'inside']) if (peek === p && art?.[side]) loadImage(art[side], im => {
+        if (peek !== p || !im) return
+        p[`${side}Tex`] = texFrom(im)
+        draw()
+      })
+    }).catch(() => {})
     if (shared) p.shared = shared
     else { p.tex = texFrom(plainCover(it)); p.rank = 0 }
     ;[it.vol.thumb || it.work.cover, it.vol.art, it.vol.front].forEach((url, rank) => {
@@ -1051,19 +1186,27 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
         draw()
       })
     })
+    // La contraportada del tomo, si la hay (las cajas de juegos traen la suya por boxArtOf).
+    if (!boxArt && it.vol.back) loadImage(it.vol.back, im => {
+      if (peek !== p || !im) return
+      p.backTex = texFrom(im)
+      draw()
+    })
     onPeek?.(peekInfo(it))
     draw()
   }
   function freePeek() {
     if (!peek) return
     for (const m of peek.box) freeMesh(m)
-    if (peek.tex && !gl.isContextLost()) gl.deleteTexture(peek.tex)
+    if (!gl.isContextLost()) for (const tex of [peek.tex, peek.spineTex, peek.backTex, peek.insideTex]) if (tex) gl.deleteTexture(tex)
     peek = null
     if (deferLayout) { deferLayout = false; api.relayout() }
   }
   function unpeek() {
     if (!peek || peek.dir < 0 || peek.fly) return
     peek.dir = -1
+    peek.spinTo = Math.round(peek.spin / (2 * Math.PI)) * 2 * Math.PI // vuelve a la fila de frente
+    peek.openTo = 0 // y cerrada
     peek.at = performance.now()
     onPeek?.(null)
     draw()
@@ -1074,9 +1217,12 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
       return { pos: lerp3(a.pos, p.fly.to.pos, e), rot: a.rot + (p.fly.to.rot - a.rot) * e, lean: (a.lean || 0) + (p.fly.to.lean - (a.lean || 0)) * e }
     }
     const t = p.t
-    if (t <= PEEK_SLIDE) return { pos: lerp3(p.from.pos, p.mid.pos, ease(t / PEEK_SLIDE)), rot: p.from.rot }
-    const e = ease((t - PEEK_SLIDE) / (1 - PEEK_SLIDE))
-    return { pos: lerp3(p.mid.pos, p.to.pos, e), rot: p.from.rot + (p.to.rot - p.from.rot) * e }
+    if (t <= PEEK_SLIDE) return { pos: lerp3(p.from.pos, p.mid.pos, ease(t / PEEK_SLIDE)), rot: p.from.rot + p.spin }
+    const e = ease((t - PEEK_SLIDE) / (1 - PEEK_SLIDE)), o = ease(p.open || 0)
+    const pos = lerp3(p.mid.pos, p.to.pos, e)
+    // Abierta, la tapa ocupa otro tanto a la izquierda: la caja se corre a la derecha y algo atrás para que quepa entera.
+    if (o) { pos[0] += p.W * 0.5 * o; pos[2] -= p.W * 0.45 * o } // abierta, la bisagra queda en el centro
+    return { pos, rot: p.from.rot + (p.to.rot - p.from.rot) * e + p.spin }
   }
   function stepPeek(now) {
     if (!peek) return false
@@ -1086,35 +1232,85 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
       f.at = now
       return f.t < 1 || !f.shot
     }
-    const dt = still ? 1 : (now - peek.at) / (peek.dir > 0 ? PEEK_OPEN_MS : PEEK_CLOSE_MS)
+    const ms = now - peek.at, dt = still ? 1 : ms / (peek.dir > 0 ? PEEK_OPEN_MS : PEEK_CLOSE_MS)
     peek.at = now
     peek.t = Math.max(0, Math.min(1, peek.t + peek.dir * dt))
+    // Giro de la caja en la mano: se acerca a su cara elegida.
+    let spinning = false
+    if (peek.spin !== peek.spinTo) {
+      const d = peek.spinTo - peek.spin
+      peek.spin = still || Math.abs(d) < 0.003 ? peek.spinTo : peek.spin + d * (1 - Math.exp(-ms / 110))
+      spinning = true
+    }
+    if (peek.open !== peek.openTo) {
+      const d = peek.openTo - peek.open
+      peek.open = still || Math.abs(d) < 0.003 ? peek.openTo : peek.open + d * (1 - Math.exp(-ms / 150))
+      spinning = true
+    }
     if (peek.dir < 0 && peek.t === 0) { freePeek(); return true }
-    return peek.t < 1 || peek.dir < 0
+    return peek.t < 1 || peek.dir < 0 || spinning
   }
   function drawPeek() {
-    const p = peek, pose = peekPose(p), [cover, spine, back, paper] = p.box
+    const p = peek, pose = peekPose(p), [cover, spine, back, paper, tray, lidIn, opening] = p.box, body = modelOf(pose), o = ease(p.open || 0)
     gl.uniform4f(u.uHide, 0, 0, 0, 0)
     gl.uniform1f(u.uDim, 1)
-    gl.uniformMatrix4fv(u.uModel, false, modelOf(pose))
+    gl.uniform1f(u.uWrap, p.it.work.wrapped && o < 0.01 ? 1 : 0) // al abrirla se quita el plástico
+    // La tapa gira sobre la bisagra del lomo (x = -W/2, z = +T/2) hasta quedar plana, a la izquierda de la bandeja.
+    const lid = o ? mulMat(body, hinge(-p.W / 2, p.T / 2, -o * Math.PI)) : body
+    if (tray && o > 0.001) {
+      gl.uniformMatrix4fv(u.uModel, false, body)
+      gl.uniform1i(u.uKind, 2)
+      gl.uniform1f(u.uHas, p.insideTex ? 1 : 0)
+      gl.uniform3fv(u.uColor, [0.05, 0.05, 0.06])
+      if (p.insideTex) gl.bindTexture(gl.TEXTURE_2D, p.insideTex)
+      drawMesh(tray)
+      gl.uniformMatrix4fv(u.uModel, false, lid) // la misma textura: su mitad izquierda es el interior de la tapa
+      drawMesh(lidIn)
+    }
+    gl.uniformMatrix4fv(u.uModel, false, lid)
     const tex = p.tex || p.shared
     gl.uniform3fv(u.uColor, paletteOf(p.it).base)
     gl.uniform1i(u.uKind, 2)
     gl.uniform1f(u.uHas, tex ? 1 : 0)
     if (tex) gl.bindTexture(gl.TEXTURE_2D, tex)
     drawMesh(cover)
-    if (p.out && built.get(p.k) === p.b) { gl.uniform1i(u.uKind, 1); gl.bindTexture(gl.TEXTURE_2D, p.b.tex) } else gl.uniform1i(u.uKind, 4)
+    gl.uniformMatrix4fv(u.uModel, false, body)
+    if (p.spineTex) { gl.uniform1i(u.uKind, 2); gl.uniform1f(u.uHas, 1); gl.bindTexture(gl.TEXTURE_2D, p.spineTex) }
+    else if (p.out && built.get(p.k) === p.b && !p.game) { gl.uniform1i(u.uKind, 1); gl.bindTexture(gl.TEXTURE_2D, p.b.tex) } else gl.uniform1i(u.uKind, 4)
     drawMesh(spine)
-    gl.uniform1i(u.uKind, 4)
+    if (p.backTex) { gl.uniform1i(u.uKind, 2); gl.uniform1f(u.uHas, 1); gl.bindTexture(gl.TEXTURE_2D, p.backTex) } else gl.uniform1i(u.uKind, 4)
     drawMesh(back)
-    gl.uniform1i(u.uKind, 5)
-    drawMesh(paper)
+    if (p.game) {
+      // Una caja no tiene hojas: sus cantos son de plástico negro, y el de apertura lleva su junta y su muesca.
+      gl.uniform1i(u.uKind, 4)
+      gl.uniform3fv(u.uColor, [0.075, 0.078, 0.088])
+      drawMesh(paper)
+      gl.uniform1i(u.uKind, 2)
+      gl.uniform1f(u.uHas, 1)
+      gl.bindTexture(gl.TEXTURE_2D, openingTexture())
+      drawMesh(opening)
+    } else {
+      gl.uniform1i(u.uKind, 5)
+      drawMesh(paper)
+    }
+    gl.uniform1f(u.uWrap, 0)
     gl.uniformMatrix4fv(u.uModel, false, IDENTITY)
   }
   // Giro del tomo: primero sobre su eje vertical (sacarlo y enseñar la portada), luego hacia atrás (posarlo en la mesa).
   function modelOf({ pos, rot, lean = 0 }) {
     const cy = Math.cos(rot), sy = Math.sin(rot), cx = Math.cos(lean), sx = Math.sin(lean)
     return new Float32Array([cy, sx * sy, -cx * sy, 0, 0, cx, sx, 0, sy, -sx * cy, cx * cy, 0, pos[0], pos[1], pos[2], 1])
+  }
+  // Matrices 4 × 4 por columnas: producto y giro sobre un eje vertical que pasa por (x, ·, z).
+  function mulMat(a, b) {
+    const out = new Float32Array(16)
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let v = 0; for (let k = 0; k < 4; k++) v += a[k * 4 + r] * b[c * 4 + k]; out[c * 4 + r] = v }
+    return out
+  }
+  function hinge(hx, hz, angle) {
+    const c = Math.cos(angle), s = Math.sin(angle)
+    // T(hx, 0, hz) · Ry(angle) · T(-hx, 0, -hz)
+    return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, hx - c * hx - s * hz, 0, hz + s * hx - c * hz, 1])
   }
   // ----- A la mesa: el tomo se centra y se recuesta como en el lector, y la mesa aparece detrás -----
   let tableTex = null, tableAspect = 1, tableMesh = null
@@ -1200,6 +1396,21 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     const r = canvas.getBoundingClientRect(), px = cx - r.left, py = cy - r.top
     if (peek?.fly) return
     if (peek) {
+      if (peek.game && peek.dir > 0 && peek.t >= 1) {
+        // Una caja: el primer clic la abre y enseña el disco; con ella abierta, el clic en el disco la juega (o instala).
+        if (peek.openTo > 0) {
+          if (peek.open > 0.9 && onPeekBook(px, py) && onOpen) return onOpen(peekInfo(peek.it))
+          return unpeek()
+        }
+        if (onPeekBook(px, py)) {
+          peek.spinTo = Math.round(peek.spin / (2 * Math.PI)) * 2 * Math.PI // de frente antes de abrir
+          peek.openTo = 1
+          peek.at = performance.now()
+          onPeek?.({ ...peekInfo(peek.it), open: true })
+          return draw()
+        }
+        return unpeek()
+      }
       if (peek.dir > 0 && peek.t >= 1 && onPeekBook(px, py) && onOpen) return onOpen(peekInfo(peek.it))
       return unpeek()
     }
@@ -1210,7 +1421,9 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
 
   // ----- Gestos: un dedo recorre, dos acercan -----
   const pointers = new Map()
-  let pinch = null, track = null, tap = null
+  let pinch = null, track = null, tap = null, spinDrag = null
+  const SPIN_PER_PX = Math.PI / 420 // media vuelta arrastrando unos 420 px
+  const canSpin = () => peek && peek.dir > 0 && peek.t >= 1 && !peek.fly && !peek.openTo // cajas y tomos; abierta no se gira
   const unitsPerPx = () => visibleH / Math.max(1, size.h) / zoom
   const spread = () => { const [a, b] = [...pointers.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 } }
   function onDown(e) {
@@ -1220,6 +1433,8 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     focusId = null
     velocity = 0
     track = null
+    // Con una caja en la mano, arrastrar la gira.
+    spinDrag = pointers.size === 1 && canSpin() ? { x: e.clientX, spin: peek.spin, t: e.timeStamp, v: 0 } : null
     if (pointers.size === 2) { const s = spread(); pinch = { ...s, zoom } }
     else if (pointers.size === 1) track = { x: e.clientX, y: e.clientY, t: e.timeStamp, v: 0 }
     draw()
@@ -1231,6 +1446,15 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     p.x = e.clientX
     p.y = e.clientY
     if (tap && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > 8) tap = null
+    if (spinDrag && canSpin() && pointers.size === 1) {
+      const next = spinDrag.spin + (e.clientX - spinDrag.x) * SPIN_PER_PX, dt = Math.max(1, e.timeStamp - spinDrag.t)
+      spinDrag.v = spinDrag.v * 0.6 + ((next - peek.spin) / dt) * 0.4
+      spinDrag.t = e.timeStamp
+      peek.spin = peek.spinTo = next
+      peek.at = performance.now()
+      draw()
+      return
+    }
     if (peek) return // con un tomo fuera, el mueble se queda quieto
     if (pinch && pointers.size >= 2) {
       const s = spread()
@@ -1250,6 +1474,17 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
   }
   function onUp(e) {
     if (!pointers.delete(e.pointerId)) return
+    if (spinDrag && !pointers.size) {
+      // Al soltar sigue un poco con el impulso y se asienta en la cara más cercana.
+      const moved = !tap
+      if (moved && canSpin()) {
+        const quarter = Math.PI / 2, fling = e.timeStamp - spinDrag.t < 80 ? spinDrag.v * 180 : 0
+        peek.spinTo = Math.round((peek.spin + fling) / quarter) * quarter
+        peek.at = performance.now()
+        draw()
+      }
+      spinDrag = null
+    }
     if (pointers.size < 2) pinch = null
     if (tap && !pointers.size && e.type === 'pointerup' && e.timeStamp - tap.t < 450) { const { moving } = tap; tap = null; track = null; return onTap(e.clientX, e.clientY, moving) }
     tap = null
@@ -1266,7 +1501,11 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
   canvas.addEventListener('pointercancel', onUp)
   canvas.addEventListener('wheel', e => {
     e.preventDefault()
-    if (peek) return
+    if (peek) {
+      // La rueda gira la caja un cuarto de vuelta por golpe.
+      if (canSpin() && Math.abs(e.deltaY) > 4 && performance.now() - (peek.wheelAt || 0) > 180) { peek.wheelAt = performance.now(); api.turnPeek(Math.sign(e.deltaY)) }
+      return
+    }
     focusId = null
     velocity = 0
     if (e.ctrlKey) return setZoom(zoom * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY) // pellizco en el panel táctil
@@ -1284,7 +1523,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     e.preventDefault()
     built.clear(); covers.clear(); furniture = null; rowsKey = ''
     if (peek) { const f = peek.fly; peek = null; onPeek?.(null); f?.done?.(null) } // sus mallas y texturas se perdieron con el contexto
-    tableMesh = null; tableTex = null
+    tableMesh = null; tableTex = null; openingTex = null
   })
   canvas.addEventListener('webglcontextrestored', () => { initGL(); layout(); draw() })
   initGL()
@@ -1294,6 +1533,14 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
 
   const api = {
     setWorks(next) { works = next; api.relayout() },
+    setSpine,
+    // Gira la caja o el tomo que se tiene en la mano un cuarto de vuelta: frente → lomo → contraportada → canto.
+    turnPeek(step = 1) {
+      if (!peek || peek.dir < 0 || peek.t < 1 || peek.fly || peek.openTo) return
+      peek.spinTo -= step * Math.PI / 2
+      peek.at = performance.now()
+      draw()
+    },
     toTop() { focusId = null; velocity = 0; toTopNext = true; api.relayout() }, // tras cambiar el orden
     relayout() {
       clearTimeout(layoutTimer)
@@ -1325,7 +1572,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     setZoom,
     draw,
     // Para las pruebas.
-    debug: () => ({ faces: Object.entries(palettes).filter(([k, v]) => k.startsWith('face:') && v).length, facesAsked: Object.keys(palettes).filter(k => k.startsWith('face:')).length, faceWaiting: faceWaiting.length, faceBusy, faceWorker: faceWorker === false ? 'off' : !!faceWorker, rows: rows.map(r => r.map(i => ({ id: i.work.id, vol: i.vol.vol, x: i.x, w: i.w, h: i.h, d: i.d, face: i.face }))), rowWidth, y, x, zoom, velocity, top, bottom, peek: peek && { id: peek.it.work.id, vol: peek.it.vol.vol, t: peek.t, dir: peek.dir, rank: peek.rank, rect: peekRect(), fly: peek.fly ? peek.fly.t : null }, focusId, notes: [...built.values()].map(b => ({ k: b.k, notes: (b.notes?.list || []).map(n => ({ id: n.work.id, x: n.x, w: n.w })) })), logos: logos.size, tilt: { ...tiltNow }, listening: tilt.listening, arts: arts.size, panels: panels.size, built: [...built.keys()], covers: covers.size, palettes: Object.keys(palettes).length, waiting: waiting.length, busy: imgBusy, ctx: !gl.isContextLost() }),
+    debug: () => ({ faces: Object.entries(palettes).filter(([k, v]) => k.startsWith('face:') && v).length, facesAsked: Object.keys(palettes).filter(k => k.startsWith('face:')).length, faceWaiting: faceWaiting.length, faceBusy, faceWorker: faceWorker === false ? 'off' : !!faceWorker, rows: rows.map(r => r.map(i => ({ id: i.work.id, vol: i.vol.vol, x: i.x, w: i.w, h: i.h, d: i.d, face: i.face }))), rowWidth, y, x, zoom, velocity, top, bottom, peek: peek && { id: peek.it.work.id, vol: peek.it.vol.vol, open: peek.open, spin: peek.spin, t: peek.t, dir: peek.dir, rank: peek.rank, rect: peekRect(), fly: peek.fly ? peek.fly.t : null }, focusId, notes: [...built.values()].map(b => ({ k: b.k, notes: (b.notes?.list || []).map(n => ({ id: n.work.id, x: n.x, w: n.w })) })), logos: logos.size, tilt: { ...tiltNow }, listening: tilt.listening, arts: arts.size, panels: panels.size, built: [...built.keys()], covers: covers.size, palettes: Object.keys(palettes).length, waiting: waiting.length, busy: imgBusy, ctx: !gl.isContextLost() }),
     destroy() {
       if (faceWorker) faceWorker.terminate()
       dead = true
@@ -1339,6 +1586,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
       freePeek()
       freeMesh(tableMesh)
       if (tableTex) gl.deleteTexture(tableTex)
+      if (openingTex) gl.deleteTexture(openingTex)
       dropAllRows()
       for (const t of covers.values()) gl.deleteTexture(t)
       covers.clear()
