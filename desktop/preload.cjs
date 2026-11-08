@@ -1,9 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('reader', {
   library: (id = 'all') => ipcRenderer.invoke('library', id),
+  languageGet: () => ipcRenderer.invoke('language-get'),
+  languageSet: preference => ipcRenderer.invoke('language-set', preference),
+  onLanguageChanged: callback => ipcRenderer.on('language-changed', (_event, value) => callback(value)),
   add: id => ipcRenderer.invoke('add', id),
   collections: () => ipcRenderer.invoke('collections'),
   createCollection: name => ipcRenderer.invoke('collection-create', name),
+  deleteCollection: id => ipcRenderer.invoke('collection-delete', id),
+  moveItem: (from, to, id) => ipcRenderer.invoke('collection-move', from, to, id),
+  removeItem: (collection, id) => ipcRenderer.invoke('collection-remove-item', collection, id),
+  launchGame: id => ipcRenderer.invoke('steam-launch', id),
+  refreshSteam: (restore = false) => ipcRenderer.invoke('steam-refresh', restore),
   members: id => ipcRenderer.invoke('collection-members', id),
   setMembership: (collection, book, checked) => ipcRenderer.invoke('collection-membership', collection, book, checked),
   displays: () => ipcRenderer.invoke('displays'),
@@ -14,11 +22,12 @@ contextBridge.exposeInMainWorld('reader', {
   pdfRange: (id, begin, end, expected) => ipcRenderer.invoke('pdf-range', id, begin, end, expected),
   page: (id, page, remember = true, allowPrompt = true) => ipcRenderer.invoke('page', id, page, remember, allowPrompt),
   progress: (id, page) => ipcRenderer.invoke('progress', id, page),
-  wallpaper: (display, collection) => ipcRenderer.invoke('wallpaper', display, collection),
+  wallpaper: (display, collection, format) => ipcRenderer.invoke('wallpaper', display, collection, format),
   removeWallpaper: display => ipcRenderer.invoke('wallpaper-remove', display),
   wallpaperActive: display => ipcRenderer.invoke('wallpaper-active', display),
   switchWallpaperCollection: collection => ipcRenderer.invoke('wallpaper-switch-collection', collection),
   onLibraryChanged: callback => ipcRenderer.on('library-changed', () => callback()),
   onDisplaysChanged: callback => ipcRenderer.on('displays-changed', () => callback()),
-  onWallpaperChanged: callback => ipcRenderer.on('wallpaper-changed', () => callback())
+  onWallpaperChanged: callback => ipcRenderer.on('wallpaper-changed', () => callback()),
+  onWallpaperCollectionChanged: callback => ipcRenderer.on('wallpaper-collection-changed', (_event, id) => callback(id))
 })

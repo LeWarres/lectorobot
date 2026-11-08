@@ -21,4 +21,19 @@ function booksFor(library, collections, collectionId) {
   const ids = new Set(collection.bookIds)
   return library.filter(book => ids.has(book.id))
 }
-module.exports = { ALL, createCollection, setMembership, booksFor }
+function seedCollections(collections, library, makeId) {
+  for (const name of ['Colección 1', 'Favoritos', 'Juegos']) {
+    if (!collections.some(item => item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) createCollection(collections, name, makeId())
+  }
+  const first = collections.find(item => item.name.toLocaleLowerCase() === 'colección 1')
+  const assigned = new Set(collections.flatMap(item => item.bookIds))
+  for (const book of library) if (!assigned.has(book.id)) first.bookIds.push(book.id)
+}
+function moveItem(collections, from, to, id) {
+  const source = collections.find(item => item.id === from), destination = collections.find(item => item.id === to)
+  if (!source || !destination || source === destination) throw new Error('Selecciona otra lista válida.')
+  if (!source.bookIds.includes(id)) throw new Error('El elemento ya no está en esta lista.')
+  destination.bookIds = [...new Set([...destination.bookIds, id])]
+  source.bookIds = source.bookIds.filter(item => item !== id)
+}
+module.exports = { ALL, createCollection, setMembership, booksFor, seedCollections, moveItem }

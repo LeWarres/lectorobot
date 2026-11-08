@@ -1,3 +1,77 @@
 <!doctype html>
-<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:"><title>Manga Desktop</title><link rel="stylesheet" href="style.css"></head>
-<body><header><div><small>TU BIBLIOTECA LOCAL</small><h1>Manga Desktop</h1></div><button id="add">+ Añadir cómics</button></header><main><p id="error" role="alert"></p><section class="manager-note"><p>Organiza tus libros en listas y elige qué estante mostrar en cada pantalla.</p><div class="controls"><label>Lista <select id="collection"></select></label><label>Nueva lista <input id="collection-name" maxlength="80" placeholder="Nombre de la lista"></label><button id="collection-create">Crear lista</button></div><div class="controls"><label>Pantalla <select id="display"></select></label><button id="wallpaper">Mostrar esta lista</button><button id="wallpaper-remove">Quitar de esta pantalla</button><span id="display-status" aria-live="polite"></span></div><p id="membership-help"></p></section><div id="shelf" hidden></div><aside id="peek" hidden><button id="peek-close" aria-label="Devolver al estante">×</button><h2 id="peek-title"></h2><p>Selecciona el tomo para continuar leyendo.</p><button id="peek-read">Leer</button></aside><section id="library"></section><section id="viewer" hidden><div id="book3d" hidden></div><nav><button id="back">← Estante</button><strong id="title"></strong><span id="counter"></span><button id="previous">Anterior</button><button id="next">Siguiente</button></nav><img id="page" alt="Página del cómic"><canvas id="pdf-page" hidden aria-label="Página del PDF"></canvas></section></main><div id="desktop-menu" hidden><div id="menu-lists" class="menu-lists" hidden></div><nav aria-label="Controles del escritorio"><button id="menu-collections" aria-expanded="false" aria-controls="menu-lists">Listas</button><button id="menu-refresh" title="Actualizar estante">Actualizar</button><button id="menu-left" aria-label="Mover a la izquierda">←</button><button id="menu-right" aria-label="Mover a la derecha">→</button><button id="menu-back" hidden>Volver al estante</button><button id="menu-zoom-out" aria-label="Reducir zoom">−</button><span id="menu-zoom-level" aria-live="polite">100 %</span><button id="menu-zoom-in" aria-label="Aumentar zoom">+</button></nav><div id="menu-current" aria-live="polite"></div></div><script src="turn-sound.js"></script><script src="renderer.js"></script></body></html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:">
+  <title>Biblioteca</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <nav class="app-toolbar" aria-label="Biblioteca y escritorio" data-i18n-aria-label="Biblioteca y escritorio">
+      <label class="toolbar-select"><span><span data-i18n="Lista actual">Lista actual</span></span><select id="collection"></select></label>
+      <div class="toolbar-group" aria-label="Administrar listas" data-i18n-aria-label="Administrar listas">
+        <button id="collection-create-open" class="toolbar-button" type="button" title="Crear lista" data-i18n-title="Crear lista"><span data-i18n="＋ Agregar lista">＋ Agregar lista</span></button>
+        <button id="collection-delete-open" class="toolbar-icon danger-icon" type="button" title="Eliminar lista" data-i18n-title="Eliminar lista" aria-label="Eliminar lista" data-i18n-aria-label="Eliminar lista"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button>
+      </div>
+      <div class="toolbar-group" aria-label="Administrar archivos" data-i18n-aria-label="Administrar archivos">
+        <button id="add" class="toolbar-button" type="button"><span aria-hidden="true">＋</span> <span data-i18n="Añadir archivo">Añadir archivo</span></button>
+        <button id="file-manage-open" class="toolbar-icon danger-icon" type="button" title="Seleccionar archivo para administrar" data-i18n-title="Seleccionar archivo para administrar" aria-label="Seleccionar archivo para administrar" data-i18n-aria-label="Seleccionar archivo para administrar" aria-pressed="false"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5"/></svg></button>
+      </div>
+      <button id="steam-refresh" class="toolbar-button" type="button" hidden title="Volver a incluir los juegos instalados que quitaste de esta lista" data-i18n-title="Volver a incluir los juegos instalados que quitaste de esta lista"><span data-i18n="Restaurar juegos">Restaurar juegos</span></button>
+      <button id="wallpaper-open" class="primary-action" type="button"><span data-i18n="Aplicar como fondo">Aplicar como fondo</span></button>
+      <label class="language-select"><span data-i18n="Idioma">Idioma</span><select id="language" aria-label="Idioma" data-i18n-aria-label="Idioma"><option value="auto" data-i18n="Automático">Automático</option><option value="es">Español</option><option value="en">English</option><option value="pt">Português</option><option value="ja">日本語</option></select></label>
+    </nav>
+  </header>
+  <main>
+    <p id="error" role="alert"></p>
+    <div class="manager-layout"><p id="membership-help" class="sr-only"></p><div id="library"></div></div>
+    <div id="shelf" hidden></div>
+    <aside id="peek" hidden><button id="peek-close" aria-label="Devolver al estante" data-i18n-aria-label="Devolver al estante">×</button><h2 id="peek-title"></h2><p><span data-i18n="Selecciona el tomo para continuar leyendo.">Selecciona el tomo para continuar leyendo.</span></p><button id="peek-read"><span data-i18n="Leer">Leer</span></button></aside>
+    <section id="viewer" hidden>
+      <div id="book3d" hidden></div>
+      <nav aria-label="Controles del lector" data-i18n-aria-label="Controles del lector"><button id="back"><span data-i18n="← Biblioteca">← Biblioteca</span></button><strong id="title"></strong><span id="counter" aria-live="polite"></span><button id="previous"><span data-i18n="Anterior">Anterior</span></button><button id="next"><span data-i18n="Siguiente">Siguiente</span></button><div class="reader-zoom" aria-label="Zoom" data-i18n-aria-label="Zoom"><button id="reader-zoom-out" aria-label="Alejar" data-i18n-aria-label="Alejar">−</button><span id="reader-zoom-level" aria-live="polite">100 %</span><button id="reader-zoom-in" aria-label="Acercar" data-i18n-aria-label="Acercar">+</button><button id="reader-zoom-reset" title="Centrar página y restablecer zoom" data-i18n-title="Centrar página y restablecer zoom"><span data-i18n="Centrar">Centrar</span></button></div></nav>
+      <img id="page" alt="Página del cómic" data-i18n-alt="Página del cómic"><canvas id="pdf-page" hidden aria-label="Página del PDF" data-i18n-aria-label="Página del PDF"></canvas>
+    </section>
+  </main>
+  <dialog id="collection-create-dialog" class="app-dialog" aria-labelledby="collection-create-title">
+    <div class="dialog-heading"><div><span class="eyebrow"><span data-i18n="TUS ESTANTES">TUS ESTANTES</span></span><h2 id="collection-create-title"><span data-i18n="Crear una lista">Crear una lista</span></h2></div><button type="button" class="dialog-close" data-dialog-close aria-label="Cerrar" data-i18n-aria-label="Cerrar">×</button></div>
+    <p><span data-i18n="Dale un nombre a tu nueva colección.">Dale un nombre a tu nueva colección.</span></p>
+    <label class="dialog-field"><span data-i18n="Nombre de la lista">Nombre de la lista</span><input id="collection-name" maxlength="80" placeholder="Por ejemplo, favoritos" data-i18n-placeholder="Por ejemplo, favoritos" autocomplete="off"></label>
+    <div class="dialog-actions"><button type="button" class="secondary-action" data-dialog-close><span data-i18n="Cancelar">Cancelar</span></button><button type="button" id="collection-create"><span data-i18n="Crear lista">Crear lista</span></button></div>
+  </dialog>
+  <dialog id="collection-delete-dialog" class="app-dialog" aria-labelledby="collection-delete-title">
+    <div class="dialog-heading"><div><span class="eyebrow"><span data-i18n="TUS ESTANTES">TUS ESTANTES</span></span><h2 id="collection-delete-title"><span data-i18n="Eliminar lista">Eliminar lista</span></h2></div><button type="button" class="dialog-close" data-dialog-close aria-label="Cerrar" data-i18n-aria-label="Cerrar">×</button></div>
+    <p id="collection-delete-question"></p>
+    <div class="dialog-actions"><button type="button" class="secondary-action" data-dialog-close><span data-i18n="Cancelar">Cancelar</span></button><button type="button" id="collection-delete-confirm" class="danger-action"><span data-i18n="Eliminar lista">Eliminar lista</span></button></div>
+  </dialog>
+  <dialog id="file-manage-dialog" class="app-dialog" aria-labelledby="file-manage-title">
+    <div class="dialog-heading"><div><span class="eyebrow"><span data-i18n="TU COLECCIÓN">TU COLECCIÓN</span></span><h2 id="file-manage-title"><span data-i18n="Administrar archivo">Administrar archivo</span></h2></div><button type="button" class="dialog-close" data-dialog-close aria-label="Cerrar" data-i18n-aria-label="Cerrar">×</button></div>
+    <p id="file-manage-question"></p>
+    <div class="dialog-stack"><button type="button" id="file-move-open" class="secondary-action"><span data-i18n="Mover a otra lista">Mover a otra lista</span></button><button type="button" id="file-delete-open" class="danger-action"><span data-i18n="Eliminar archivo">Eliminar archivo</span></button><button type="button" class="text-action" data-dialog-close><span data-i18n="Cancelar">Cancelar</span></button></div>
+  </dialog>
+  <dialog id="file-delete-dialog" class="app-dialog" aria-labelledby="file-delete-title">
+    <div class="dialog-heading"><div><span class="eyebrow"><span data-i18n="TU COLECCIÓN">TU COLECCIÓN</span></span><h2 id="file-delete-title"><span data-i18n="Eliminar archivo">Eliminar archivo</span></h2></div><button type="button" class="dialog-close" data-dialog-close aria-label="Cerrar" data-i18n-aria-label="Cerrar">×</button></div>
+    <p id="file-delete-question"></p>
+    <div class="dialog-actions"><button type="button" class="secondary-action" data-dialog-close><span data-i18n="Cancelar">Cancelar</span></button><button type="button" id="file-delete-confirm" class="danger-action"><span data-i18n="Eliminar archivo">Eliminar archivo</span></button></div>
+  </dialog>
+  <dialog id="file-move-dialog" class="app-dialog" aria-labelledby="file-move-title">
+    <div class="dialog-heading"><div><span class="eyebrow"><span data-i18n="TU COLECCIÓN">TU COLECCIÓN</span></span><h2 id="file-move-title"><span data-i18n="Mover archivo">Mover archivo</span></h2></div><button type="button" class="dialog-close" data-dialog-close aria-label="Cerrar" data-i18n-aria-label="Cerrar">×</button></div>
+    <p><span data-i18n="Elige la lista donde quieres guardar este archivo.">Elige la lista donde quieres guardar este archivo.</span></p>
+    <label class="dialog-field"><span data-i18n="Lista de destino">Lista de destino</span><select id="file-move-destination"></select></label>
+    <div class="dialog-actions"><button type="button" class="secondary-action" data-dialog-close><span data-i18n="Cancelar">Cancelar</span></button><button type="button" id="file-move-confirm"><span data-i18n="Mover archivo">Mover archivo</span></button></div>
+  </dialog>
+  <dialog id="wallpaper-dialog" class="app-dialog" aria-labelledby="wallpaper-title">
+    <div class="dialog-heading"><div><span class="eyebrow"><span data-i18n="TU ESCRITORIO">TU ESCRITORIO</span></span><h2 id="wallpaper-title"><span data-i18n="Aplicar como fondo">Aplicar como fondo</span></h2></div><button type="button" class="dialog-close" data-dialog-close aria-label="Cerrar" data-i18n-aria-label="Cerrar">×</button></div>
+    <p><span data-i18n="Elige qué estante mostrar y dónde quieres verlo.">Elige qué estante mostrar y dónde quieres verlo.</span></p>
+    <label class="dialog-field"><span data-i18n="Lista">Lista</span><select id="wallpaper-collection"></select></label>
+    <label class="dialog-field"><span data-i18n="Pantalla">Pantalla</span><select id="display"></select></label>
+    <label class="dialog-field"><span data-i18n="Formato">Formato</span><select id="wallpaper-format"><option value="full" data-i18n="Pantalla completa">Pantalla completa</option><option value="centered" data-i18n="Centrado">Centrado</option></select></label>
+    <span id="display-status" class="display-status" aria-live="polite"></span>
+    <div class="dialog-actions"><button type="button" id="wallpaper-remove" class="text-action"><span data-i18n="Quitar estante">Quitar estante</span></button><button type="button" class="secondary-action" data-dialog-close><span data-i18n="Cancelar">Cancelar</span></button><button type="button" id="wallpaper"><span data-i18n="Aplicar fondo">Aplicar fondo</span></button></div>
+  </dialog>
+  <div id="desktop-menu" hidden><div id="menu-lists" class="menu-lists" hidden></div><nav aria-label="Controles del escritorio" data-i18n-aria-label="Controles del escritorio"><button id="menu-collections" aria-expanded="false" aria-controls="menu-lists"><span data-i18n="Listas">Listas</span></button><button id="menu-refresh" title="Actualizar estante" data-i18n-title="Actualizar estante"><span data-i18n="Actualizar">Actualizar</span></button><button id="menu-left" aria-label="Mover a la izquierda" data-i18n-aria-label="Mover a la izquierda">←</button><button id="menu-right" aria-label="Mover a la derecha" data-i18n-aria-label="Mover a la derecha">→</button><button id="menu-back" hidden><span data-i18n="Volver al estante">Volver al estante</span></button><button id="menu-zoom-out" aria-label="Reducir zoom" data-i18n-aria-label="Reducir zoom">−</button><span id="menu-zoom-level" aria-live="polite">100 %</span><button id="menu-zoom-in" aria-label="Aumentar zoom" data-i18n-aria-label="Aumentar zoom">+</button><button id="menu-zoom-reset" title="Centrar y restablecer zoom" data-i18n-title="Centrar y restablecer zoom"><span data-i18n="Centrar">Centrar</span></button></nav><div id="menu-current" aria-live="polite"></div></div>
+  <script src="turn-sound.js"></script><script src="i18n.js"></script><script src="renderer.js"></script>
+</body>
+</html>

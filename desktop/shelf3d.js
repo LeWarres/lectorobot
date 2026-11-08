@@ -113,7 +113,7 @@ precision highp float;
 uniform int uKind;
 uniform sampler2D uTex;
 uniform vec3 uColor;
-uniform float uHas, uPitch, uDepth, uDim, uAlpha;
+uniform float uHas, uPitch, uDepth, uDim, uAlpha, uManage;
 uniform vec4 uSpot; // mesa: centro del tomo y radio de la luz
 uniform vec2 uTab; // mesa propia: escala de la foto; sin ella, madera repetida
 uniform vec2 uSize;
@@ -146,6 +146,7 @@ void main() {
     color = vec4(t * mix(1.04, 0.42, smoothstep(0.35, 1.6, d)), uAlpha);
     return;
   } else c = uColor; // tapas, de canto
+  if (uManage > 0.5 && uKind > 0 && uKind < 6) c = mix(c, vec3(0.85, 0.08, 0.08), 0.68);
   float lit = mix(0.62, 1.05, clamp(dot(normalize(vNor), L), 0.0, 1.0));
   // Lo del fondo y lo que queda bajo la balda de arriba recibe menos luz.
   float z = clamp(vPos.z / uDepth, 0.0, 1.0);
@@ -205,7 +206,7 @@ const FLY_MS = 900
 const PEEK_OPEN_MS = 720, PEEK_CLOSE_MS = 520, PEEK_SLIDE = 0.34 // el tomo sale recto de la fila y luego gira hacia la cámara
 const ZOOM_MAX = 3, ORBIT_TILT = 10, ORBIT_YAW = 18, ORBIT_BACK = 0.08, REST_TILT = -3, FRICTION_MS = 320
 
-export function createShelf3D(container, lib, { works: firstWorks = [], rowsLandscape = 2.3, rowsPortrait = 3, still = false, pagesOf = null, onPeek = null, onOpen = null, table = null } = {}) {
+export function createShelf3D(container, lib, { works: firstWorks = [], rowsLandscape = 2.3, rowsPortrait = 3, still = false, pagesOf = null, onPeek = null, onOpen = null, onManage = null, table = null } = {}) {
   const { Shape, woodCanvas, cameraMatrix, project, FOV, coverPalette, inkOn, css, createTilt, MAX_DEG } = lib
   const canvas = document.createElement('canvas')
   canvas.className = 'shelfcanvas'
@@ -214,7 +215,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
   container.replaceChildren(canvas)
   const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 2048
 
-  let dead = false, raf = 0, u = {}, prog = null, wood = null, furniture = null, works = firstWorks, aniso = null
+  let dead = false, raf = 0, u = {}, prog = null, wood = null, furniture = null, works = firstWorks, aniso = null, managing = false
   let rows = [], rowWidth = 3, size = { w: 1, h: 1 }, visibleH = 2.8, top = 0, bottom = 0, y = 0, layoutTimer = 0, rowsKey = ''
   const built = new Map(), covers = new Map(), loadingImg = new Map(), waiting = []
   const arts = new Map(), panels = new Map(), askedPanel = new Set() // arte de los lomos, y página a color de los tomos sin portada
@@ -267,7 +268,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog) || 'shader')
     gl.useProgram(prog)
     u = {}
-    for (const n of ['uM', 'uModel', 'uKind', 'uTex', 'uColor', 'uHas', 'uPitch', 'uDepth', 'uSize', 'uDim', 'uHide', 'uAlpha', 'uSpot', 'uTab']) u[n] = gl.getUniformLocation(prog, n)
+    for (const n of ['uM', 'uModel', 'uKind', 'uTex', 'uColor', 'uHas', 'uPitch', 'uDepth', 'uSize', 'uDim', 'uHide', 'uAlpha', 'uSpot', 'uTab', 'uManage']) u[n] = gl.getUniformLocation(prog, n)
     gl.uniform1i(u.uTex, 0)
     gl.uniformMatrix4fv(u.uModel, false, IDENTITY)
     gl.uniform1f(u.uDim, 1)
@@ -940,6 +941,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     const dist = (visibleH / 2 / Math.tan(FOV / 2) / zoom) * (1 + ORBIT_BACK * round)
     const M = cameraMatrix([rowWidth / 2 + x, y, SHELF.DEPTH], dist, aspect, ((REST_TILT - tiltNow.x * ORBIT_TILT) * Math.PI) / 180, (-tiltNow.y * ORBIT_YAW * Math.PI) / 180)
     gl.uniformMatrix4fv(u.uM, false, M)
+    gl.uniform1f(u.uManage, managing ? 1 : 0)
     lastM = M
     gl.uniform2f(u.uSize, w, h)
     gl.uniform1f(u.uDim, peek ? (1 - 0.42 * ease(peek.t)) * (1 - 0.6 * ease(peek.fly?.t || 0)) : 1)
@@ -1205,6 +1207,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
     }
     if (wasMoving) return // ese toque solo frenó la inercia
     const hit = pickAt(px, py)
+    if (hit && managing) return onManage?.(hit.it.work)
     if (hit) startPeek(hit.it, hit.k)
   }
 
@@ -1293,6 +1296,7 @@ export function createShelf3D(container, lib, { works: firstWorks = [], rowsLand
   draw()
 
   const api = {
+    setManage(value) { managing = Boolean(value); if (peek) unpeek(); draw() },
     setWorks(next) { works = next; api.relayout() },
     toTop() { focusId = null; velocity = 0; toTopNext = true; api.relayout() }, // tras cambiar el orden
     relayout() {

@@ -1,16 +1,18 @@
-const { app, BrowserWindow, dialog, ipcMain, screen, Tray, Menu } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, screen, Tray, Menu, shell } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const { promisify } = require('node:util')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const crypto = require('node:crypto')
 const { pages, rar } = require('./archive.cjs')
-const { ALL, createCollection, setMembership, booksFor } = require('./collections.cjs')
+const { ALL, createCollection, setMembership, booksFor, seedCollections, moveItem } = require('./collections.cjs')
 const { secureWindow } = require('./window-security.cjs')
 const { waitForReady } = require('./process-ready.cjs')
 const { validLibrary, validCollections } = require('./storage-validation.cjs')
 const { createLargeFileGuard, FILE_WARNING_BYTES } = require('./large-files.cjs')
 const { readPdfRange } = require('./pdf-range.cjs')
+const { listSteamGames, launchSteamGame } = require('./steam.cjs')
+const i18n = require('./i18n.js')
 
 async function pdfSource(book) {
   const { size, mtimeMs } = await fs.stat(book.path)
@@ -21,19 +23,42 @@ let library = []
 let win
 const wallpapers = new Map()
 let collections = []
+let steamGames = []
+let steamWrites = Promise.resolve()
+const allItems = () => [...library, ...steamGames]
 let collectionWrites = Promise.resolve()
 let libraryWrites = Promise.resolve()
 let tray
 let quitting = false
+let languagePreference = 'auto', languageWrites = Promise.resolve()
+const locale = () => i18n.resolveLocale(languagePreference, app.getLocale())
+const tr = (source, params) => i18n.translate(locale(), source, params)
+function refreshTray() {
+  if (!tray) return
+  tray.setToolTip(tr('Biblioteca'))
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: tr('Abrir biblioteca'), click: () => { win.show(); win.focus() } },
+    { label: tr('Salir'), click: () => { quitting = true; app.quit() } }
+  ]))
+}
+function refreshAppMenu() {
+  const item = (label, role) => ({ label: tr(label), role })
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: tr('Archivo'), submenu: [item('Cerrar', 'close')] },
+    { label: tr('Editar'), submenu: [item('Deshacer', 'undo'), item('Rehacer', 'redo'), { type: 'separator' }, item('Cortar', 'cut'), item('Copiar', 'copy'), item('Pegar', 'paste'), item('Seleccionar todo', 'selectAll')] },
+    { label: tr('Ver'), submenu: [item('Recargar', 'reload'), item('Pantalla completa', 'togglefullscreen')] },
+    { label: tr('Ventana'), submenu: [item('Minimizar', 'minimize'), item('Cerrar', 'close')] }
+  ]))
+}
 const largeFiles = createLargeFileGuard({
   stat: file => fs.stat(file),
   confirm: async ({ kind, bytes, title }) => {
     const size = (bytes / (1024 * 1024)).toFixed(1)
     const result = await dialog.showMessageBox({
-      type: 'warning', title: 'Contenido grande',
-      message: `${kind === 'página' ? 'La' : 'El'} ${kind} de «${title}» ocupa aproximadamente ${size} MiB.`,
-      detail: 'Procesarlo puede usar mucha memoria y tardar. Puedes continuar si tu equipo tiene recursos suficientes.',
-      buttons: ['Continuar', 'Cancelar'], defaultId: 1, cancelId: 1, noLink: true
+      type: 'warning', title: tr('Contenido grande'),
+      message: tr(kind === 'página' ? 'La página de «{title}» ocupa aproximadamente {size} MiB.' : 'El archivo de «{title}» ocupa aproximadamente {size} MiB.', { title, size }),
+      detail: tr('Procesarlo puede usar mucha memoria y tardar. Puedes continuar si tu equipo tiene recursos suficientes.'),
+      buttons: [tr('Continuar'), tr('Cancelar')], defaultId: 1, cancelId: 1, noLink: true
     })
     return result.response === 0
   }
@@ -43,6 +68,9 @@ if (!singleInstance) app.quit()
 app.on('second-instance', () => { if (win && !win.isDestroyed()) { win.show(); win.focus() } })
 const indexPath = () => path.join(app.getPath('userData'), 'library.json')
 const collectionsPath = () => path.join(app.getPath('userData'), 'collections.json')
+const defaultsMarker = () => path.join(app.getPath('userData'), 'default-collections-v1')
+const steamSeenPath = () => path.join(app.getPath('userData'), 'steam-seen.json')
+const settingsPath = () => path.join(app.getPath('userData'), 'language-settings.json')
 function notifyWallpapers() { for (const item of wallpapers.values()) if (!item.window.isDestroyed()) item.window.webContents.send('library-changed') }
 function saveCollections() {
   const contents = JSON.stringify(collections, null, 2)
@@ -68,13 +96,34 @@ function save() {
   })
   return libraryWrites
 }
+function refreshSteam(restore = false) {
+  const task = steamWrites.catch(() => {}).then(async () => {
+  const found = await listSteamGames()
+  steamGames = found.map(game => ({ id: `steam:${game.id}`, steamId: game.id, title: game.name, type: 'steam', page: 0, coverPath: game.coverPath }))
+  const gamesList = collections.find(item => item.name.toLocaleLowerCase() === 'juegos')
+  if (!gamesList) return
+  let seen = []
+  try { seen = JSON.parse(await fs.readFile(steamSeenPath(), 'utf8')); if (!Array.isArray(seen) || !seen.every(id => typeof id === 'string')) throw new Error('Formato de juegos inválido.') } catch (error) { if (error.code !== 'ENOENT') throw error }
+  const known = new Set(seen)
+  for (const game of steamGames) if (restore || !known.has(game.id)) { setMembership(collections, gamesList.id, game.id, true); known.add(game.id) }
+  await saveCollections()
+  await fs.writeFile(steamSeenPath() + '.tmp', JSON.stringify([...known]))
+  await fs.rename(steamSeenPath() + '.tmp', steamSeenPath())
+  })
+  steamWrites = task
+  return task
+}
 app.whenReady().then(async () => {
+  try {
+    const settings = JSON.parse(await fs.readFile(settingsPath(), 'utf8'))
+    if (['auto', 'es', 'en', 'pt', 'ja'].includes(settings.language)) languagePreference = settings.language
+  } catch (error) { if (error.code !== 'ENOENT') console.error('No se pudo leer la configuración de idioma:', error) }
   try {
     library = JSON.parse(await fs.readFile(indexPath(), 'utf8'))
     if (!validLibrary(library)) throw new Error('Formato de biblioteca inválido')
   } catch (error) {
     if (error.code !== 'ENOENT') {
-      dialog.showErrorBox('No se pudo abrir la biblioteca', `${error.message}\nLos datos originales se conservaron.`)
+      dialog.showErrorBox(tr('No se pudo abrir la biblioteca'), `${tr(error.message)}\n${tr('Los datos originales se conservaron.')}`)
       app.quit()
       return
     }
@@ -84,18 +133,22 @@ app.whenReady().then(async () => {
     if (!validCollections(collections)) throw new Error('Formato de listas inválido')
   } catch (error) {
     if (error.code !== 'ENOENT') {
-      dialog.showErrorBox('No se pudieron abrir las listas', `${error.message}\nLos datos originales se conservaron.`)
+      dialog.showErrorBox(tr('No se pudieron abrir las listas'), `${tr(error.message)}\n${tr('Los datos originales se conservaron.')}`)
       app.quit(); return
     }
   }
+  try { await fs.access(defaultsMarker()) } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    seedCollections(collections, library, () => crypto.randomUUID())
+    await saveCollections()
+    await fs.writeFile(defaultsMarker(), '1')
+  }
+  try { await refreshSteam() } catch (error) { console.error('No se pudo leer la biblioteca local de Steam:', error) }
   win = new BrowserWindow({ width: 1200, height: 800, minWidth: 700, minHeight: 500, backgroundColor: '#171411', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } })
   secureWindow(win)
+  refreshAppMenu()
   tray = new Tray(path.join(__dirname, 'icon.png'))
-  tray.setToolTip('Manga Desktop')
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Abrir biblioteca', click: () => { win.show(); win.focus() } },
-    { label: 'Salir', click: () => { quitting = true; app.quit() } }
-  ]))
+  refreshTray()
   tray.on('double-click', () => { win.show(); win.focus() })
   win.on('close', event => { if (!quitting && wallpapers.size) { event.preventDefault(); win.hide() } })
   win.on('closed', () => { for (const item of wallpapers.values()) if (!item.window.isDestroyed()) item.window.destroy() })
@@ -113,24 +166,67 @@ app.whenReady().then(async () => {
   await win.loadFile(path.join(__dirname, 'index.html'))
 }).catch(error => { dialog.showErrorBox('No se pudo iniciar Manga Desktop', error.message); app.quit() })
 app.on('window-all-closed', () => app.quit())
-ipcMain.handle('library', (_event, collectionId = ALL) => booksFor(library, collections, collectionId).map(({ id, title, page, type }) => ({ id, title, page, type })))
+ipcMain.handle('library', (_event, collectionId = ALL) => booksFor(allItems(), collections, collectionId).map(({ id, title, page, type }) => ({ id, title, page, type })))
+ipcMain.handle('language-get', () => ({ preference: languagePreference, system: app.getLocale() }))
+ipcMain.handle('language-set', async (_event, preference) => {
+  if (!['auto', 'es', 'en', 'pt', 'ja'].includes(preference)) throw new Error('Idioma inválido.')
+  const task = languageWrites.catch(() => {}).then(async () => {
+    await fs.mkdir(path.dirname(settingsPath()), { recursive: true })
+    await fs.writeFile(settingsPath() + '.tmp', JSON.stringify({ language: preference }))
+    await fs.rename(settingsPath() + '.tmp', settingsPath())
+    languagePreference = preference
+    refreshAppMenu()
+    refreshTray()
+    const settings = { preference, system: app.getLocale() }
+    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('language-changed', settings)
+    return settings
+  })
+  languageWrites = task
+  return task
+})
 ipcMain.handle('collections', () => [{ id: ALL, name: 'Toda la biblioteca' }, ...collections])
 ipcMain.handle('collection-create', async (_event, name) => {
   const item = createCollection(collections, name, crypto.randomUUID())
   await saveCollections()
   return item
 })
+ipcMain.handle('collection-delete', async (_event, id) => {
+  const index = collections.findIndex(item => item.id === id)
+  if (index < 0) throw new Error('La lista ya no existe.')
+  const [removed] = collections.splice(index, 1)
+  if (!collections.length) createCollection(collections, 'Colección 1', crypto.randomUUID())
+  const retained = new Set(collections.flatMap(item => item.bookIds))
+  for (const item of removed.bookIds) if (!retained.has(item)) collections[0].bookIds.push(item)
+  await saveCollections()
+  for (const [key, item] of wallpapers) {
+    if (item.collectionId !== id || item.window.isDestroyed()) continue
+    if (collections.length) { item.collectionId = collections[0].id; item.window.webContents.send('wallpaper-collection-changed', item.collectionId) }
+    else { wallpapers.delete(key); item.window.destroy() }
+  }
+  notifyWallpapers()
+  if (win && !win.isDestroyed()) win.webContents.send('wallpaper-changed')
+})
+ipcMain.handle('collection-move', async (_event, from, to, id) => {
+  if (!allItems().some(item => item.id === id)) throw new Error('El elemento ya no está disponible.')
+  moveItem(collections, from, to, id)
+  await saveCollections(); notifyWallpapers()
+})
+ipcMain.handle('collection-remove-item', async (_event, collectionId, id) => {
+  if (!allItems().some(item => item.id === id)) throw new Error('El elemento ya no está disponible.')
+  setMembership(collections, collectionId, id, false)
+  await saveCollections(); notifyWallpapers()
+})
 ipcMain.handle('collection-membership', async (_event, collectionId, bookId, checked) => {
-  getBook(bookId)
+  if (!allItems().some(item => item.id === bookId)) throw new Error('El elemento ya no está disponible.')
   if (typeof checked !== 'boolean') throw new Error('Selección inválida.')
   setMembership(collections, collectionId, bookId, checked)
   await saveCollections(); notifyWallpapers()
 })
-ipcMain.handle('collection-members', (_event, collectionId) => booksFor(library, collections, collectionId).map(book => book.id))
-ipcMain.handle('displays', () => screen.getAllDisplays().map((display, index) => ({ id: String(display.id), label: `Pantalla ${index + 1}${display.label ? ` · ${display.label}` : ''}${display.id === screen.getPrimaryDisplay().id ? ' (principal)' : ''} · ${display.size.width} × ${display.size.height}` })))
+ipcMain.handle('collection-members', (_event, collectionId) => booksFor(allItems(), collections, collectionId).map(book => book.id))
+ipcMain.handle('displays', () => screen.getAllDisplays().map((display, index) => ({ id: String(display.id), label: `${tr('Pantalla {number}', { number: index + 1 })}${display.label ? ` · ${display.label}` : ''}${display.id === screen.getPrimaryDisplay().id ? ` (${tr('principal')})` : ''} · ${display.size.width} × ${display.size.height}` })))
 ipcMain.handle('add', async (_event, collectionId = ALL) => {
-  booksFor(library, collections, collectionId)
-  const result = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], filters: [{ name: 'Cómics y documentos', extensions: ['cbz', 'cbr', 'zip', 'pdf'] }] })
+  booksFor(allItems(), collections, collectionId)
+  const result = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], filters: [{ name: tr('Cómics y documentos'), extensions: ['cbz', 'cbr', 'zip', 'pdf'] }] })
   if (result.canceled) return
   for (const file of result.filePaths) {
     let book = library.find(item => item.path === file)
@@ -157,6 +253,8 @@ ipcMain.handle('open', async (_event, id) => {
   return { title: book.title, type: book.type, total: entries.length, page: Math.min(book.page, entries.length - 1) }
 })
 ipcMain.handle('cover', async (_event, id) => {
+  const game = steamGames.find(item => item.id === id)
+  if (game) return game.coverPath ? fs.readFile(game.coverPath).catch(() => null) : null
   const book = getBook(id)
   if (book.type === 'pdf') return null
   if (!await largeFiles.canPreview(book)) return null
@@ -164,6 +262,17 @@ ipcMain.handle('cover', async (_event, id) => {
   const entry = entries[0]
   if (!entry || !await largeFiles.canPreview(book, entry.header?.size ?? entry.unpSize)) return null
   return book.type === 'cbr' ? await rar(book.path, entry.name) : await entry.getData()
+})
+ipcMain.handle('steam-launch', async (_event, id) => {
+  const game = steamGames.find(item => item.id === id)
+  if (!game) throw new Error('El juego ya no está instalado.')
+  await launchSteamGame(game.steamId, url => shell.openExternal(url))
+})
+ipcMain.handle('steam-refresh', async (_event, restore = false) => {
+  if (typeof restore !== 'boolean') throw new Error('Solicitud de Steam inválida.')
+  await refreshSteam(restore)
+  notifyWallpapers()
+  if (win && !win.isDestroyed()) win.webContents.send('library-changed')
 })
 ipcMain.handle('pdf-cover', async (_event, id) => {
   const book = getBook(id)
@@ -203,7 +312,7 @@ ipcMain.handle('wallpaper-active', (_event, displayId) => {
 ipcMain.handle('wallpaper-switch-collection', (event, collectionId) => {
   const item = [...wallpapers.values()].find(entry => entry.window.webContents === event.sender)
   if (!item) throw new Error('El estante ya no está activo.')
-  booksFor(library, collections, collectionId)
+  booksFor(allItems(), collections, collectionId)
   item.collectionId = collectionId
   if (win && !win.isDestroyed()) win.webContents.send('wallpaper-changed')
 })
@@ -212,18 +321,19 @@ ipcMain.handle('wallpaper-remove', (_event, displayId) => {
   if (item) wallpapers.delete(String(displayId))
   if (item && !item.window.isDestroyed()) item.window.destroy()
 })
-ipcMain.handle('wallpaper', async (_event, displayId, collectionId) => {
+ipcMain.handle('wallpaper', async (_event, displayId, collectionId, format = 'full') => {
   if (process.platform !== 'win32') throw new Error('El fondo de escritorio solo está disponible en Windows.')
   const display = screen.getAllDisplays().find(item => String(item.id) === String(displayId))
   if (!display) throw new Error('La pantalla seleccionada ya no está conectada.')
-  booksFor(library, collections, collectionId)
+  booksFor(allItems(), collections, collectionId)
+  if (!['full', 'centered'].includes(format)) throw new Error('Formato de pantalla inválido.')
   const key = String(display.id), previous = wallpapers.get(key)
   const wallpaper = new BrowserWindow({ ...display.bounds, frame: false, skipTaskbar: true, show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } })
   secureWindow(wallpaper)
   const item = { window: wallpaper, collectionId, mouseForwarder: null }
   wallpaper.on('closed', () => { item.mouseForwarder?.kill(); if (wallpapers.get(key) === item) wallpapers.delete(key) })
   try {
-    await wallpaper.loadFile(path.join(__dirname, 'index.html'), { query: { wallpaper: '1', collection: collectionId } })
+    await wallpaper.loadFile(path.join(__dirname, 'index.html'), { query: { wallpaper: '1', collection: collectionId, format } })
     const handle = wallpaper.getNativeWindowHandle().readBigUInt64LE().toString()
     const script = path.join(__dirname, 'wallpaper.ps1').replace('app.asar', 'app.asar.unpacked')
     await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-WindowHandle', handle], { windowsHide: true, timeout: 10000 })

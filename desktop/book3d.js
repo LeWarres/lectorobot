@@ -383,6 +383,38 @@ export function createTilt(onChange) {
   }
 }
 
+function enableBookPan(canvas, current, update) {
+  let drag = null, suppressClick = false
+  const cursor = () => { canvas.style.cursor = current().s > 1 ? (drag ? 'grabbing' : 'grab') : '' }
+  canvas.addEventListener('pointerdown', event => {
+    if (current().s <= 1 || event.button !== 0) return
+    suppressClick = false
+    const { x, y } = current()
+    drag = { id: event.pointerId, startX: event.clientX, startY: event.clientY, x, y, moved: false }
+    canvas.setPointerCapture(event.pointerId)
+    cursor()
+    event.preventDefault()
+  })
+  canvas.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.id) return
+    const dx = event.clientX - drag.startX, dy = event.clientY - drag.startY
+    if (Math.hypot(dx, dy) > 4) drag.moved = true
+    if (drag.moved) update(drag.x + dx, drag.y + dy)
+  })
+  const end = event => {
+    if (!drag || event.pointerId !== drag.id) return
+    suppressClick = drag.moved
+    drag = null
+    cursor()
+  }
+  canvas.addEventListener('pointerup', end)
+  canvas.addEventListener('pointercancel', end)
+  canvas.addEventListener('click', event => {
+    if (suppressClick) { event.preventDefault(); event.stopPropagation(); suppressClick = false }
+  }, true)
+  return cursor
+}
+
 export function createBook3D(container, opts) {
   const { total, src, whenReady, spreadOf, isWide, still = false } = opts
   const canvas = document.createElement('canvas')
@@ -650,7 +682,6 @@ export function createBook3D(container, opts) {
   }
   const pagesOf = v => (v.kind === 'closed' ? [0] : v.kind === 'wide' ? [v.page] : [v.left, v.right]).filter(i => i != null)
   const pageOn = (v, side) => (v.kind === 'wide' ? { i: v.page, wide: true } : v.kind === 'closed' ? { i: null } : { i: side > 0 ? v.right : v.left })
-  const hasAll = v => pagesOf(v).every(i => textures.has(i))
 
   // Lo que debe llenar la pantalla. A una página, solo esa mitad; la otra sigue ahí, fuera de cuadro.
   function frameOf(v) {
@@ -884,7 +915,7 @@ export function createBook3D(container, opts) {
     const dTilt = ((-tiltNow.x * ORBIT_TILT - 9 * lift) * Math.PI) / 180, yaw = (-tiltNow.y * ORBIT_YAW * Math.PI) / 180
     const M = cameraMatrix(cam.target, cam.dist, aspect, TILT + dTilt, yaw)
     // Zoom del lector y el pequeño desplazamiento del movimiento: se aplican a la imagen final, que se vuelve a dibujar nítida.
-    const s = zoom.s, ox = s - 1 + (2 * (zoom.x + tiltNow.y * 3)) / rect.width, oy = -(s - 1) - (2 * (zoom.y + tiltNow.x * 3)) / rect.height
+    const s = zoom.s, ox = (2 * (zoom.x + tiltNow.y * 3)) / rect.width, oy = -(2 * (zoom.y + tiltNow.x * 3)) / rect.height
     for (let c = 0; c < 4; c++) {
       M[c * 4] = s * M[c * 4] + ox * M[c * 4 + 3]
       M[c * 4 + 1] = s * M[c * 4 + 1] + oy * M[c * 4 + 3]
@@ -987,6 +1018,14 @@ export function createBook3D(container, opts) {
 
   const ro = new ResizeObserver(draw)
   ro.observe(container)
+  function pan(x, y) {
+    const bounds = container.getBoundingClientRect()
+    const limitX = bounds.width * (zoom.s - 1) / 2, limitY = bounds.height * (zoom.s - 1) / 2
+    zoom.x = Math.max(-limitX, Math.min(limitX, x))
+    zoom.y = Math.max(-limitY, Math.min(limitY, y))
+    draw()
+  }
+  const updateCursor = enableBookPan(canvas, () => zoom, pan)
   const onVis = () => { if (document.visibilityState === 'visible') { if (!still) tilt.permit() } else tilt.listen(false) }
   document.addEventListener('visibilitychange', onVis)
   canvas.addEventListener('webglcontextlost', e => {
@@ -1021,7 +1060,7 @@ export function createBook3D(container, opts) {
       trim()
       const prev = view
       let ctl = null
-      if (prev && dir && prev.key !== next.key && !(prev.kind === 'closed' && next.kind === 'closed') && W > 0 && hasAll(next)) ctl = startTurn(prev, next, dir, drag)
+      if (prev && dir && prev.key !== next.key && !(prev.kind === 'closed' && next.kind === 'closed') && W > 0) ctl = startTurn(prev, next, dir, drag)
       else if (prev && dir && prev.key === next.key && prev.focus !== next.focus && W > 0 && camNow) camMove = { from: camNow, t0: performance.now(), dur: 450 } // la otra cara de la misma pareja
       if (ctl) anim.to = next
       else view = next
@@ -1040,7 +1079,12 @@ export function createBook3D(container, opts) {
       draw()
       return ctl
     },
-    setZoom(s, x, y) { zoom = { s, x, y }; draw() },
+    setZoom(s) {
+      const ratio = s / zoom.s
+      zoom.s = s
+      pan(s === 1 ? 0 : zoom.x * ratio, s === 1 ? 0 : zoom.y * ratio)
+      updateCursor()
+    },
     setFilter(css) { fxM = filterMatrix(css); draw() },
     invalidate(i) {
       const t = textures.get(i)
