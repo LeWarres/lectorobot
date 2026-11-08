@@ -25,6 +25,9 @@ body:not(.wallpaper) #error:not(:empty){position:fixed;z-index:30;top:84px;left:
 body:not(.wallpaper) #viewer nav{position:fixed;top:16px;left:20px;right:20px;z-index:6;gap:9px;padding:8px;border:1px solid #ffffff20;border-radius:12px;background:#18211ef2;box-shadow:0 8px 28px #0006}body:not(.wallpaper) #viewer nav button{padding:9px 12px;background:#34483c;color:#edf3e9}body:not(.wallpaper) #viewer nav button:hover{background:#486253}body:not(.wallpaper) #viewer nav #back{background:#e9c78f;color:#243028}body:not(.wallpaper) #title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}body:not(.wallpaper) #counter{color:#c0cdc3;font-size:13px;white-space:nowrap}.reader-zoom{display:flex;align-items:center;gap:4px;padding-left:5px;border-left:1px solid #ffffff25}.reader-zoom span{min-width:46px;text-align:center;font-size:12px;color:#d1ddd2}
 .wallpaper .manager-layout{display:none}
 .wallpaper .reader-zoom{display:none}
+.wallpaper #reader-direction{display:none}
+.reading-direction{max-width:190px;min-height:36px;padding:6px 8px;border:1px solid #6a806a;border-radius:8px;background:#25352c;color:#f4f1e8;font:inherit;font-size:12px;cursor:pointer}
+#desktop-menu .reading-direction{max-width:200px;background:#30271f;color:#f7eddd}
 .wallpaper.centered{background:#000}.wallpaper.centered #shelf{width:min(100vw, 133.333vh);margin:0 auto}
 body.managing #library .book{filter:sepia(1) saturate(5) hue-rotate(320deg)}
 #book3d canvas,#page,#pdf-page{touch-action:none}

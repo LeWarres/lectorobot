@@ -12,6 +12,7 @@ const { validLibrary, validCollections } = require('./storage-validation.cjs')
 const { createLargeFileGuard, FILE_WARNING_BYTES } = require('./large-files.cjs')
 const { readPdfRange } = require('./pdf-range.cjs')
 const { listSteamGames, launchSteamGame } = require('./steam.cjs')
+const { extensions, supportedFile } = require('./file-types.cjs')
 const i18n = require('./i18n.js')
 
 async function pdfSource(book) {
@@ -224,10 +225,15 @@ ipcMain.handle('collection-membership', async (_event, collectionId, bookId, che
 })
 ipcMain.handle('collection-members', (_event, collectionId) => booksFor(allItems(), collections, collectionId).map(book => book.id))
 ipcMain.handle('displays', () => screen.getAllDisplays().map((display, index) => ({ id: String(display.id), label: `${tr('Pantalla {number}', { number: index + 1 })}${display.label ? ` · ${display.label}` : ''}${display.id === screen.getPrimaryDisplay().id ? ` (${tr('principal')})` : ''} · ${display.size.width} × ${display.size.height}` })))
-ipcMain.handle('add', async (_event, collectionId = ALL) => {
+ipcMain.handle('add', async (event, collectionId = ALL) => {
+  const wallpaper = [...wallpapers.values()].find(item => item.window.webContents === event.sender)
+  if (wallpaper) collectionId = wallpaper.collectionId
   booksFor(allItems(), collections, collectionId)
-  const result = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], filters: [{ name: tr('Cómics y documentos'), extensions: ['cbz', 'cbr', 'zip', 'pdf'] }] })
+  const options = { properties: ['openFile', 'multiSelections'], filters: [{ name: tr('Cómics y documentos'), extensions }] }
+  const result = wallpaper ? await dialog.showOpenDialog(options) : await dialog.showOpenDialog(win, options)
   if (result.canceled) return
+  if (!result.filePaths.every(supportedFile)) throw new Error('Selecciona solo archivos CBZ, CBR o PDF.')
+  booksFor(allItems(), collections, collectionId)
   for (const file of result.filePaths) {
     let book = library.find(item => item.path === file)
     if (!book) { book = { id: crypto.randomUUID(), title: path.basename(file, path.extname(file)), path: file, type: path.extname(file).toLowerCase().slice(1), page: 0 }; library.push(book) }
@@ -236,6 +242,7 @@ ipcMain.handle('add', async (_event, collectionId = ALL) => {
   await save()
   if (collectionId !== ALL) await saveCollections()
   notifyWallpapers()
+  if (wallpaper && win && !win.isDestroyed()) win.webContents.send('library-changed')
 })
 ipcMain.handle('remove', async (_event, id) => {
   getBook(id)

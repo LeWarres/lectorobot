@@ -58,7 +58,7 @@ test('abrir un libro en la aplicación inicia el lector 3D y sus controles de zo
       append(...items) { this.children.push(...items) }, replaceChildren() { this.children = [] },
       addEventListener(name, handler) { this[`on${name}`] = handler }, querySelectorAll() { return [] } }
   }
-  const document = { querySelector(key) { if (!nodes.has(key)) nodes.set(key, element()); return nodes.get(key) },
+  const document = { querySelector(key) { if (key.startsWith('dialog[')) return null; if (!nodes.has(key)) nodes.set(key, element()); return nodes.get(key) },
     createElement: element, addEventListener() {}, body: element() }
   const reader = { library: async () => [{ id: '1', title: 'Manga', type: 'cbz' }],
     collections: async () => [{ id: 'c1', name: 'Colección 1' }], displays: async () => [],
@@ -134,6 +134,54 @@ test('el menú del escritorio cambia la lista y controla el zoom', async () => {
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(selected, 'm')
   assert.equal(nodes.get('#menu-current').textContent, 'Manga')
+})
+
+test('la dirección cambia clics, flechas y controles sin cambiar la página', async () => {
+  const nodes = new Map(), handlers = {}, clicks = [], stored = [], shown = []
+  function element() {
+    return { hidden: true, style: {}, dataset: {}, children: [], classList: { add() {} }, append() {}, replaceChildren() {},
+      setAttribute() {}, addEventListener() {}, querySelectorAll() { return [] }, click() { this.onclick?.() } }
+  }
+  const document = { querySelector(key) { if (!nodes.has(key)) nodes.set(key, element()); return nodes.get(key) },
+    createElement: element, addEventListener(name, handler) { handlers[name] = handler }, body: element() }
+  const reader = { library: () => new Promise(() => {}), collections: async () => [], onLibraryChanged() {}, onDisplaysChanged() {}, onWallpaperChanged() {} }
+  const context = vm.createContext({ document, window: { reader, localStorage: { getItem: () => null, setItem: (...args) => stored.push(args) } }, location: { search: '?wallpaper=1' }, innerWidth: 1000, URLSearchParams, URL, Blob, console, shown })
+  vm.runInContext(fs.readFileSync(require.resolve('./renderer.js'), 'utf8'), context)
+  await new Promise(resolve => setImmediate(resolve))
+  vm.runInContext('viewer.hidden = false; page = 2; total = 5; book3d = { show: group => shown.push(group[0]) }', context)
+  nodes.get('#previous').onclick = () => clicks.push('previous')
+  nodes.get('#next').onclick = () => clicks.push('next')
+  nodes.get('#book3d').onclick({ clientX: 100 })
+  assert.deepEqual(clicks, ['next'])
+  nodes.get('#menu-direction').onchange({ target: { value: 'ltr' } })
+  assert.deepEqual(shown, [2])
+  assert.equal(vm.runInContext('page', context), 2)
+  assert.deepEqual(stored, [['lectorobot-reading-direction', 'ltr']])
+  assert.equal(nodes.get('#reader-direction').value, 'ltr')
+  assert.equal(nodes.get('#menu-left').title, 'Página anterior')
+  nodes.get('#book3d').onclick({ clientX: 100 })
+  handlers.keydown({ key: 'ArrowRight' })
+  nodes.get('#menu-left').onclick()
+  assert.deepEqual(clicks, ['next', 'previous', 'next', 'previous'])
+  handlers.keydown({ key: 'ArrowLeft', target: { closest: () => ({}) } })
+  handlers.keydown({ key: 'ArrowLeft', target: { isContentEditable: true } })
+  handlers.keydown({ key: 'ArrowRight', ctrlKey: true })
+  assert.deepEqual(clicks, ['next', 'previous', 'next', 'previous'])
+})
+
+test('añadir desde el escritorio conserva el libro abierto y usa su lista activa', async () => {
+  const nodes = new Map(), added = []
+  const element = () => ({ hidden: true, style: {}, dataset: {}, children: [], classList: { add() {} }, append() {}, replaceChildren() {}, setAttribute() {}, addEventListener() {}, querySelectorAll() { return [] } })
+  const document = { querySelector(key) { if (key.startsWith('dialog[')) return null; if (!nodes.has(key)) nodes.set(key, element()); return nodes.get(key) }, createElement: element, addEventListener() {}, body: element() }
+  const reader = { add: async id => added.push(id), library: () => new Promise(() => {}), collections: async () => [], onLibraryChanged() {}, onDisplaysChanged() {}, onWallpaperChanged() {} }
+  const context = vm.createContext({ document, window: { reader }, location: { search: '?wallpaper=1&collection=manga' }, URLSearchParams, URL, Blob, console })
+  vm.runInContext(fs.readFileSync(require.resolve('./renderer.js'), 'utf8'), context)
+  await new Promise(resolve => setImmediate(resolve))
+  vm.runInContext("viewer.hidden = false; current = 'book'; page = 3", context)
+  await nodes.get('#menu-add').onclick()
+  assert.deepEqual(added, ['manga'])
+  assert.equal(nodes.get('#viewer').hidden, false)
+  assert.equal(vm.runInContext('page', context), 3)
 })
 
 test('eliminar un elemento requiere pasar por dos diálogos y confirmar', async () => {

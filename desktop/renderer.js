@@ -14,6 +14,8 @@ const displaySelect = document.querySelector('#display')
 let current, total, page, imageUrl, pdf, shelf, coverUrls = [], book3d, bookUrls = new Map(), pendingPageUrls = new Map(), generation = 0, pageRequest = 0, zoom = 1
 let flatPan = { x: 0, y: 0 }, flatDrag = null
 let managing = false, selectedItem = null, openRequest = 0
+let readingDirection = 'rtl'
+try { if (window.localStorage?.getItem('lectorobot-reading-direction') === 'ltr') readingDirection = 'ltr' } catch {}
 const translations = window.LectorobotI18n || { resolveLocale: () => 'es', translate: (_locale, source, params = {}) => source.replace(/\{(\w+)\}/g, (_, key) => params[key] ?? '') }
 let currentLocale = 'es', languagePreference = 'auto', systemLanguage = typeof navigator === 'undefined' ? 'es' : navigator.language
 const tr = (source, params) => translations.translate(currentLocale, source, params)
@@ -232,7 +234,7 @@ async function startBook() {
     whenReady: (i, callback) => pageUrl(i).then(url => { if (version === generation) callback(url) }).catch(err => { if (version === generation) { error.textContent = err.message; callback(null) } }),
     spreadOf: i => i === 0 ? [0] : [i % 2 ? i : i - 1, i % 2 ? i + 1 : i].filter(n => n < total),
     isWide: () => false,
-    dir: () => 'rtl',
+    dir: () => readingDirection,
     paper: () => [0.96, 0.94, 0.88],
     double: () => false
   })
@@ -276,6 +278,8 @@ async function showPage(direction = 0) {
   updateDesktopMenu()
 }
 function updateDesktopMenu() {
+  document.querySelector('#reader-direction').value = readingDirection
+  document.querySelector('#menu-direction').value = readingDirection
   const readerLevel = document.querySelector('#reader-zoom-level')
   if (readerLevel) readerLevel.textContent = `${Math.round(zoom * 100)} %`
   const readerZoomOut = document.querySelector('#reader-zoom-out'), readerZoomIn = document.querySelector('#reader-zoom-in')
@@ -283,14 +287,23 @@ function updateDesktopMenu() {
   if (readerZoomIn) readerZoomIn.disabled = zoom >= 3
   if (!isWallpaper) return
   const reading = !viewer.hidden
+  document.querySelector('#menu-direction').hidden = !reading
+  const leftIsNext = readingDirection === 'rtl'
   document.querySelector('#menu-back').hidden = !reading
-  document.querySelector('#menu-left').disabled = reading ? page >= total - 1 : zoom <= 1
-  document.querySelector('#menu-right').disabled = reading ? page <= 0 : zoom <= 1
-  document.querySelector('#menu-left').title = tr(reading ? 'Página siguiente' : 'Mover estante a la izquierda (acerca para desplazar)')
-  document.querySelector('#menu-right').title = tr(reading ? 'Página anterior' : 'Mover estante a la derecha (acerca para desplazar)')
+  document.querySelector('#menu-left').disabled = reading ? (leftIsNext ? page >= total - 1 : page <= 0) : zoom <= 1
+  document.querySelector('#menu-right').disabled = reading ? (leftIsNext ? page <= 0 : page >= total - 1) : zoom <= 1
+  document.querySelector('#menu-left').title = tr(reading ? (leftIsNext ? 'Página siguiente' : 'Página anterior') : 'Mover estante a la izquierda (acerca para desplazar)')
+  document.querySelector('#menu-right').title = tr(reading ? (leftIsNext ? 'Página anterior' : 'Página siguiente') : 'Mover estante a la derecha (acerca para desplazar)')
   document.querySelector('#menu-zoom-level').textContent = `${Math.round(zoom * 100)} %`
   document.querySelector('#menu-zoom-out').disabled = zoom <= 1
   document.querySelector('#menu-zoom-in').disabled = zoom >= 3
+}
+function setReadingDirection(direction, persist = true) {
+  if (direction !== 'rtl' && direction !== 'ltr') return
+  readingDirection = direction
+  if (persist) { try { window.localStorage?.setItem('lectorobot-reading-direction', direction) } catch {} }
+  if (!viewer.hidden && book3d) book3d.show([page])
+  updateDesktopMenu()
 }
 function setDesktopZoom(next) {
   const previous = zoom
@@ -464,13 +477,21 @@ async function movePage(direction) {
 }
 document.querySelector('#previous').onclick = () => attempt(() => movePage(-1))
 document.querySelector('#next').onclick = () => attempt(() => movePage(1))
-bookHost.onclick = event => { if (event.clientX < innerWidth / 2) document.querySelector('#next').click(); else document.querySelector('#previous').click() }
-document.addEventListener('keydown', event => { if (!viewer.hidden && event.key === 'ArrowLeft') document.querySelector('#next').click(); if (!viewer.hidden && event.key === 'ArrowRight') document.querySelector('#previous').click() })
+function navigateSide(left) { document.querySelector(left === (readingDirection === 'rtl') ? '#next' : '#previous').click() }
+bookHost.onclick = event => navigateSide(event.clientX < innerWidth / 2)
+document.addEventListener('keydown', event => {
+  if (viewer.hidden || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.target?.isContentEditable || event.target?.closest?.('input, select, textarea')) return
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') navigateSide(event.key === 'ArrowLeft')
+})
+document.querySelector('#reader-direction').onchange = event => setReadingDirection(event.target.value)
+document.querySelector('#menu-direction').onchange = event => setReadingDirection(event.target.value)
+window.addEventListener?.('storage', event => { if (event.key === 'lectorobot-reading-direction') setReadingDirection(event.newValue, false) })
 document.querySelector('#menu-collections').onclick = () => attempt(showMenuCollections)
+document.querySelector('#menu-add').onclick = () => attempt(async () => { await window.reader.add(wallpaperCollection); if (viewer.hidden) await showLibrary() })
 document.querySelector('#menu-refresh').onclick = () => attempt(async () => { await window.reader.refreshSteam(); await showLibrary() })
 document.querySelector('#menu-back').onclick = () => attempt(showLibrary)
-document.querySelector('#menu-left').onclick = () => { if (viewer.hidden) shelf?.moveHorizontal(-0.5); else document.querySelector('#next').click() }
-document.querySelector('#menu-right').onclick = () => { if (viewer.hidden) shelf?.moveHorizontal(0.5); else document.querySelector('#previous').click() }
+document.querySelector('#menu-left').onclick = () => { if (viewer.hidden) shelf?.moveHorizontal(-0.5); else navigateSide(true) }
+document.querySelector('#menu-right').onclick = () => { if (viewer.hidden) shelf?.moveHorizontal(0.5); else navigateSide(false) }
 document.querySelector('#menu-zoom-in').onclick = () => setDesktopZoom(zoom + 0.25)
 document.querySelector('#menu-zoom-out').onclick = () => setDesktopZoom(zoom - 0.25)
 document.querySelector('#menu-zoom-reset').onclick = () => setDesktopZoom(1)
